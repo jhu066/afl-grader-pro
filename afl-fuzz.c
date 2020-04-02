@@ -2301,12 +2301,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%08u,%s", out_dir, queued_paths,
+    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
                       describe_op(hnb));
 
 #else
 
-    fn = alloc_printf("%s/queue/id_%08u", out_dir, queued_paths);
+    fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
 
 #endif /* ^!SIMPLE_FILES */
 
@@ -2374,12 +2374,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/hangs/id:%08llu,%s", out_dir,
+      fn = alloc_printf("%s/hangs/id:%06llu,%s", out_dir,
                         unique_hangs, describe_op(0));
 
 #else
 
-      fn = alloc_printf("%s/hangs/id_%08llu", out_dir,
+      fn = alloc_printf("%s/hangs/id_%06llu", out_dir,
                         unique_hangs);
 
 #endif /* ^!SIMPLE_FILES */
@@ -2413,14 +2413,16 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
       if (!unique_crashes) write_crash_readme();
 
+
+
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/crashes/id:%08llu,sig:%02u,%s", out_dir,
+      fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
                         unique_crashes, kill_signal, describe_op(0));
 
 #else
 
-      fn = alloc_printf("%s/crashes/id_%08llu_%02u", out_dir, unique_crashes,
+      fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
                         kill_signal);
 
 #endif /* ^!SIMPLE_FILES */
@@ -3510,13 +3512,14 @@ static void sync_fuzzers(char** argv) {
     // DIR* qd;
     struct dirent* qd_ent;
     u8 *qd_path, *qd_synced_path;
+    u8 *deletetscs;
     u32 min_accept = 0, next_min_accept;
 
     s32 id_fd;
 
     /* Skip dot files and our own output directory, and not fuzz dir. */
 
-    if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name) || !startswith(sd_ent->d_name, "fuzz")) continue;
+    if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name) || !startswith(sd_ent->d_name, "Kirenenko")) continue;
 
     /* Skip anything that doesn't have a queue/ subdirectory. */
     // ACTF("target_sync_dir: %s", sd_ent->d_name);
@@ -3562,6 +3565,7 @@ static void sync_fuzzers(char** argv) {
       int dir_n = scandir(qd_path, &namelist, 0, alphasort);
       if(dir_n < 0) {
         ck_free(qd_path);
+        close(id_fd); // J.H.
         continue;    
       } 
       // while ((qd_ent = readdir(qd))) {
@@ -3574,7 +3578,15 @@ static void sync_fuzzers(char** argv) {
 
         if (qd_ent->d_name[0] == '.' ||
             sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
-            syncing_case < min_accept) continue; // if the tscs has been executed before, skip it. 
+            syncing_case < min_accept) {
+            // delete the ones below min_accept!
+            if(qd_ent->d_name[0] != '.' && syncing_case < min_accept) {
+              deletetscs = alloc_printf("%s/%s", qd_path, qd_ent->d_name);
+              if(unlink(deletetscs)) 
+                PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", deletetscs, syncing_case, min_accept);
+            }            
+            continue; // if the tscs has been executed before, skip it. 
+        }
 
         if(i == 0 && num_checked_seeds == sync_max_seeds_per)
           break;
@@ -3625,9 +3637,7 @@ static void sync_fuzzers(char** argv) {
           munmap(mem, st.st_size);
 
           if (!(stage_cur++ % stats_update_freq)) show_stats();
-
         }
-
         ck_free(path);
         close(fd);
 
@@ -3646,11 +3656,8 @@ static void sync_fuzzers(char** argv) {
       ck_free(qd_path);
       ck_free(qd_synced_path);
     }
-    
   }  
-
   closedir(sd);
-
 }
 
 

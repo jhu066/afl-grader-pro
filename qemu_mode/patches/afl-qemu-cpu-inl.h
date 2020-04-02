@@ -225,7 +225,7 @@ inline uint32_t bitmap_hash(acc)
 }
 
 // mark
-#define N_GRAM_POW2 3
+#define N_GRAM_POW2 10
 #define N_GRAM (1 << N_GRAM_POW2)
 
 /* The equivalent of the tuple logging routine from afl-as.h. */
@@ -247,10 +247,10 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
      something quasi-uniform. */
 
 
-  cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
+  // cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
   cur_loc &= MAP_SIZE - 1;
 
-  next_pc = (next_pc >> 4) ^ (next_pc << 8);
+  // next_pc = (next_pc >> 4) ^ (next_pc << 8);
   next_pc &= MAP_SIZE - 1;
 
 
