@@ -70,7 +70,7 @@
 /* Maximum number of unique hangs or crashes to record: */
 
 #define KEEP_UNIQUE_HANG    500
-#define KEEP_UNIQUE_CRASH   5000
+#define KEEP_UNIQUE_CRASH   500000000
 
 /* Baseline number of random tweaks during a single 'havoc' stage: */
 

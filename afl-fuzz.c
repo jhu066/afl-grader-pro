@@ -136,6 +136,7 @@ static u8 is_qemu_log = 0;
 static u8 is_trim_case = 0;
 
 static u8* trace_bits;                /* SHM with instrumentation bitmap  */
+static u8 overall_bits[MAP_SIZE];     /* collect all hitcount with no exponential hitcount distortion */
 
 static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
@@ -302,6 +303,9 @@ enum {
 #include "khash.h"
 KHASH_MAP_INIT_INT(32,u32)
 khash_t(32) *cksum2paths;
+
+KHASH_SET_INIT_INT64(p64)
+khash_t(p64) *hash_value_set;
 
 static u32 getPaths(u32 key_cksum){
   khiter_t k = kh_get(32, cksum2paths, key_cksum);
@@ -1238,8 +1242,9 @@ static void setup_shm(void) {
 
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
+  memset(overall_bits, 0, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 8, IPC_CREAT | IPC_EXCL | 0600); //J.H. 
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1257,18 +1262,23 @@ static void setup_shm(void) {
 
   ck_free(shm_str);
 
-  trace_bits = shmat(shm_id, NULL, 0);
-  
-  if (!trace_bits) PFATAL("shmat() failed");
+  trace_bits = shmat(shm_id, NULL, 0);  
+  if (!trace_bits) PFATAL("trace_bits shmat() failed");
+
+  // overall_bits = shmat(shm_id, NULL, 0);
+  // if (!overall_bits) PFATAL("overall_bits shmat() failed");
+
 
     ACTF("shm_id: %i", (int)shm_id);
 #ifdef __x86_64__
     ACTF("trace_bits@ 0x%016lx", (unsigned long)trace_bits);
+    ACTF("overall_bits@ 0x%016lx", (unsigned long)overall_bits);
     ACTF("virgin_bits@ 0x%016lx", (unsigned long)virgin_bits);
     ACTF("virgin_hang@ 0x%016lx", (unsigned long)virgin_hang);
     ACTF("virgin_crash@ 0x%016lx", (unsigned long)virgin_crash);
 #else
     ACTF("trace_bits@ 0x%08x", (unsigned int)trace_bits);
+    ACTF("overall_bits@ 0x%08x", (unsigned int)overall_bits);
     ACTF("virgin_bits@ 0x%08x", (unsigned int)virgin_bits);
     ACTF("virgin_hang@ 0x%08x", (unsigned int)virgin_hang);
     ACTF("virgin_crash@ 0x%08x", (unsigned int)virgin_crash);
@@ -1597,7 +1607,7 @@ static u8 run_target(char** argv) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE);
+  memset(trace_bits, 0, MAP_SIZE + 8); // J.H. 
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -1744,11 +1754,11 @@ static u8 run_target(char** argv) {
 
   tb4 = *(u32*)trace_bits;
 
-#ifdef __x86_64__
-  classify_counts((u64*)trace_bits);
-#else
-  classify_counts((u32*)trace_bits);
-#endif /* ^__x86_64__ */
+// #ifdef __x86_64__
+//   classify_counts((u64*)trace_bits);
+// #else
+//   classify_counts((u32*)trace_bits);
+// #endif /* ^__x86_64__ */
   
   /* Report outcome to caller. */
 
@@ -2267,19 +2277,183 @@ static void write_crash_readme(void) {
 
 }
 
+/* check if the execution triggers unique path (identified by unique path hash value) => queue folder
+                       or triggers unique crashes (trigger crash and unique path hash) => crash folder*/
+static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8* path) {
+  u8 *fn = "";
+  u8  hnb;
+  int ifnew;
+  s32 fd;
+  u8  keeping = 0, res;
+
+  // this is my real path validation
+  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE);
+  kh_put(p64, hash_value_set, afl_trace_p[0], &ifnew);
+
+  // printout the real content of this bitmap now:
+  FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/bitmap_real.log", "a+");
+  // fprintf(fptr, "[afl-fuzz]: %s - %lu\n", path, afl_trace_p[0]);
+  // fclose(fptr);
+  int bit_i = 0;
+  double rareness = 0.0;
+  for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
+    // optimized for frequent cases: no hit
+    if (trace_bits[bit_i] == 0)
+      continue;
+    fprintf(fptr, "bitmap[%d]: %d\n", bit_i, trace_bits[bit_i], trace_bits[bit_i]);
+    overall_bits[bit_i] += trace_bits[bit_i]; // count the new hit count as well! next calculate the rareness score
+    rareness += (1.0 / overall_bits[bit_i]);
+  }
+  fprintf(fptr, "rareness score being: %.5f\n", rareness);
+  fclose(fptr);
+
+  //Update path freq. No change to semantics
+  khiter_t k;
+  int ret;
+  u32 key_cksum = afl_trace_p[0];//hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  k = kh_get(32, cksum2paths, key_cksum);
+  if (k == kh_end(cksum2paths)){
+      k = kh_put(32, cksum2paths, key_cksum, &ret);
+      kh_value(cksum2paths, k) = 1;
+  }
+  //if (k != kh_end(cksum2paths)){
+  else {
+    ++kh_value(cksum2paths, k);
+  }
+  
+  
+  
+  // for debug log 
+  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/grader.log", "a+");
+  // fprintf(fptr, "[afl-fuzz]: %s - %lu - uniq=%d, count=%d\n", path, afl_trace_p[0], ifnew, kh_value(cksum2paths, k));
+  // fclose(fptr);
+  // for debug log 
+
+  if (fault == crash_mode) {
+    hnb = has_new_bits(virgin_bits);
+    if(!ifnew) { // not a new path triggered
+      // now I'd like to store the first 5 hit of the same path 
+      if (kh_value(cksum2paths, k) <= 5) {
+        fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
+                        unique_crashes, kill_signal, describe_op(0));
+      }
+ 
+      if(crash_mode) total_crashes++; // if a crash, inc total crashes, but not unique crashes
+      return 0;
+    }
+    // else this is a new path hash, move to dest folder
+
+#ifndef SIMPLE_FILES
+    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
+                      describe_op(hnb));
+#else
+    fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
+#endif /* ^!SIMPLE_FILES */
+    if (is_trim_case && (len <= 10*1024)) {
+      len = minimize_case(argv, mem, len, key_cksum, fn);
+    }
+    extra_blocks(queued_paths, 0);
+    add_to_queue(fn, len, 0);
+
+    if(ifnew) {
+      queue_top->has_new_cov = 1;
+      queued_with_cov++;
+    }
+    queue_top->exec_cksum = key_cksum;  
+    res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
+
+    if (res == FAULT_ERROR)
+      FATAL("Unable to execute target application");
+
+    fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) PFATAL("Unable to create '%s'", fn);
+    ck_write(fd, mem, len, fn);
+    close(fd);
+
+    keeping = 1; // set keeping to 1 because it is unique path  
+  }
+
+  switch(fault) {
+    case FAULT_HANG:
+      /* Hangs are not very interesting, but we're still obliged to keep
+         a handful of samples. We use the presence of new bits in the
+         hang-specific bitmap as a signal of uniqueness. In "dumb" mode, we
+         just keep everything. */
+      total_hangs++;
+
+      // if (unique_hangs >= KEEP_UNIQUE_HANG) return keeping;
+#ifndef SIMPLE_FILES
+      fn = alloc_printf("%s/hangs/id:%06llu,%s", out_dir,
+                        unique_hangs, describe_op(0));
+#else
+      fn = alloc_printf("%s/hangs/id_%06llu", out_dir,
+                        unique_hangs);
+#endif /* ^!SIMPLE_FILES */
+      unique_hangs++;
+
+      last_hang_time = get_cur_time();
+
+      break;
+    case FAULT_CRASH:
+      /* This is handled in a manner roughly similar to hangs,
+         except for slightly different limits. */
+      total_crashes++;
+
+      // if (unique_crashes >= KEEP_UNIQUE_CRASH) return keeping;
+
+      if (!unique_crashes) write_crash_readme();
+
+#ifndef SIMPLE_FILES
+      fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
+                        unique_crashes, kill_signal, describe_op(0));
+#else
+      fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
+                        kill_signal);
+#endif /* ^!SIMPLE_FILES */
+      if(unique_crashes == 0)
+      {
+        first_crash_time = get_cur_time();
+      }
+
+      extra_blocks(unique_crashes, 1);
+
+      unique_crashes++;
+
+      last_crash_time = get_cur_time();
+
+      break;
+
+    case FAULT_ERROR: FATAL("Unable to execute target application");
+
+    default: return keeping;
+
+  }
+  /* If we're here, we apparently want to save the crash or hang
+     test case, too. */
+  fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) PFATAL("Unable to create '%s'", fn);
+  ck_write(fd, mem, len, fn);
+  close(fd);
+
+  ck_free(fn);
+  return keeping;
+}
 
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
-
-/*validate the bitmap for n2 */
-
-static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
+static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* path) {
 
   u8  *fn = "";
   u8  hnb;
   s32 fd;
   u8  keeping = 0, res;
+
+  // J.H. reading the whole path hash value, testing code
+  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE);
+  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/debug.log", "a+");
+  // fprintf(fptr, "[afl-fuzz]: %s - %lu\n", path, afl_trace_p[0]);
+  // fclose(fptr);
 
   //Update path freq. No change to semantics
   khiter_t k;
@@ -2290,26 +2464,18 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   }
 
   if (fault == crash_mode) {
-
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
-
     if (!(hnb = has_new_bits(virgin_bits))) {
       if (crash_mode) total_crashes++;
       return 0;
     }    
-
 #ifndef SIMPLE_FILES
-
     fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
                       describe_op(hnb));
-
 #else
-
     fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
-
 #endif /* ^!SIMPLE_FILES */
-
     if (is_trim_case && (len <= 10*1024))
     {
       len = minimize_case(argv, mem, len, key_cksum, fn);
@@ -3631,7 +3797,7 @@ static void sync_fuzzers(char** argv) {
           if (stop_soon) return;
 
           syncing_party = sd_ent->d_name;
-          queued_imported += save_if_interesting(argv, mem, st.st_size, fault); // if the file is interesting, where the validation of file happens! 
+          queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path); // if the file is interesting, where the validation of file happens! 
           syncing_party = 0;
 
           munmap(mem, st.st_size);
@@ -4598,6 +4764,7 @@ int main(int argc, char** argv) {
   u8  mem_limit_given = 0;
   // Allocate memory for hashmaps
   cksum2paths = kh_init(32); 
+  hash_value_set = kh_init(p64);
 
   char** use_argv;
 

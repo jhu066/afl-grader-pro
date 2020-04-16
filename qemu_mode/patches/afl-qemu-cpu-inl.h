@@ -225,12 +225,17 @@ inline uint32_t bitmap_hash(acc)
 }
 
 // mark
-#define N_GRAM_POW2 10
+#define N_GRAM_POW2 1
 #define N_GRAM (1 << N_GRAM_POW2)
 
 /* The equivalent of the tuple logging routine from afl-as.h. */
 
-void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
+void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) { 
+  
+  /*J.H.:
+      1. whole path hash stored in the extended uint64_t space
+      2. the edge hit count stored in the bitmap still. Now i changed it into N2 gram. 
+  */
 
   // static abi_ulong prev_loc;
   static abi_ulong n_pair[N_GRAM];
@@ -239,6 +244,15 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
 
   if (((cur_loc > afl_end_code || cur_loc < afl_start_code) && (next_pc > afl_end_code || next_pc < afl_start_code)) || !afl_area_ptr)
     return;
+
+
+  uint64_t* afl_trace_p = (uint64_t*)(afl_area_ptr + MAP_SIZE);
+  afl_trace_p[0] *= 7;
+  afl_trace_p[0] += cur_loc;
+
+  FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/qemu.log", "a+");
+  // fprintf(fptr, "[QEMU]: cur_loc: %lu, afl_trace_p[0]: %lu\n", cur_loc,  afl_trace_p[0]);
+  // fclose(fptr);
 
   /* Looks like QEMU always maps to fixed locations, so we can skip this:
      cur_loc -= afl_start_code; */
@@ -278,12 +292,13 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   if(afl_area_ptr && afl_area_ptr[acc] < 255)
   {
     afl_area_ptr[acc] ++;
+    fprintf(fptr, "[QEMU]: hit in bitmap, loc: %d, hit: %d\n", acc, afl_area_ptr[acc]);
   }
 
   n_pair[N_GRAM-1] = cur;
   // afl_area_ptr[cur_loc ^ prev_loc]++;
   // prev_loc = cur_loc >> 1;
-
+  fclose(fptr);
 }
 
 
