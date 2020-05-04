@@ -136,7 +136,7 @@ static u8 is_qemu_log = 0;
 static u8 is_trim_case = 0;
 
 static u8* trace_bits;                /* SHM with instrumentation bitmap  */
-static u8 overall_bits[MAP_SIZE];     /* collect all hitcount with no exponential hitcount distortion */
+static int overall_bits[MAP_SIZE];     /* collect all hitcount with no exponential hitcount distortion */
 
 static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
@@ -1242,7 +1242,7 @@ static void setup_shm(void) {
 
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
-  memset(overall_bits, 0, MAP_SIZE);
+  memset(overall_bits, 0, MAP_SIZE * sizeof(int));
 
   shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 8, IPC_CREAT | IPC_EXCL | 0600); //J.H. 
 
@@ -2300,11 +2300,11 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     // optimized for frequent cases: no hit
     if (trace_bits[bit_i] == 0)
       continue;
-    fprintf(fptr, "bitmap[%d]: %d\n", bit_i, trace_bits[bit_i], trace_bits[bit_i]);
+    // fprintf(fptr, "bitmap[%d]: %d\n", bit_i, trace_bits[bit_i], trace_bits[bit_i]);
     overall_bits[bit_i] += trace_bits[bit_i]; // count the new hit count as well! next calculate the rareness score
     rareness += (1.0 / overall_bits[bit_i]);
   }
-  fprintf(fptr, "rareness score being: %.5f\n", rareness);
+  fprintf(fptr, "path: %s, rareness score being: %.5f\n", path, rareness);
   fclose(fptr);
 
   //Update path freq. No change to semantics
@@ -2319,8 +2319,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   //if (k != kh_end(cksum2paths)){
   else {
     ++kh_value(cksum2paths, k);
-  }
-  
+  } 
   
   
   // for debug log 
@@ -2329,30 +2328,14 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   // fclose(fptr);
   // for debug log 
 
-  if (fault == crash_mode) {
-    hnb = has_new_bits(virgin_bits);
-    if(!ifnew) { // not a new path triggered
-      // now I'd like to store the first 5 hit of the same path 
-      if (kh_value(cksum2paths, k) <= 5) {
-        fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
-      }
- 
-      if(crash_mode) total_crashes++; // if a crash, inc total crashes, but not unique crashes
-      return 0;
-    }
-    // else this is a new path hash, move to dest folder
+  if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
 
-#ifndef SIMPLE_FILES
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
-#else
-    fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
-#endif /* ^!SIMPLE_FILES */
+    fn = alloc_printf("%s/queue/id:%06u_%.2f", out_dir, queued_paths, rareness);
+
     if (is_trim_case && (len <= 10*1024)) {
       len = minimize_case(argv, mem, len, key_cksum, fn);
     }
-    extra_blocks(queued_paths, 0);
+    // extra_blocks(queued_paths, 0);
     add_to_queue(fn, len, 0);
 
     if(ifnew) {
@@ -2403,19 +2386,22 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 
       if (!unique_crashes) write_crash_readme();
 
-#ifndef SIMPLE_FILES
-      fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
-#else
-      fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
-                        kill_signal);
-#endif /* ^!SIMPLE_FILES */
+// #ifndef SIMPLE_FILES
+//       fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
+//                         unique_crashes, kill_signal, describe_op(0));
+// #else
+//       fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
+//                         kill_signal);
+// #endif /* ^!SIMPLE_FILES */
+
+      fn = alloc_printf("%s-crashes/queue/id:%06llu_%.2f", out_dir, unique_crashes, rareness);
+
       if(unique_crashes == 0)
       {
         first_crash_time = get_cur_time();
       }
 
-      extra_blocks(unique_crashes, 1);
+      // extra_blocks(unique_crashes, 1);
 
       unique_crashes++;
 

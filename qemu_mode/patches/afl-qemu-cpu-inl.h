@@ -250,7 +250,7 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   afl_trace_p[0] *= 7;
   afl_trace_p[0] += cur_loc;
 
-  FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/qemu.log", "a+");
+  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/qemu.log", "a+");
   // fprintf(fptr, "[QEMU]: cur_loc: %lu, afl_trace_p[0]: %lu\n", cur_loc,  afl_trace_p[0]);
   // fclose(fptr);
 
@@ -292,13 +292,13 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   if(afl_area_ptr && afl_area_ptr[acc] < 255)
   {
     afl_area_ptr[acc] ++;
-    fprintf(fptr, "[QEMU]: hit in bitmap, loc: %d, hit: %d\n", acc, afl_area_ptr[acc]);
+    // fprintf(fptr, "[QEMU]: hit in bitmap, loc: %d, hit: %d\n", acc, afl_area_ptr[acc]);
   }
 
   n_pair[N_GRAM-1] = cur;
   // afl_area_ptr[cur_loc ^ prev_loc]++;
   // prev_loc = cur_loc >> 1;
-  fclose(fptr);
+  // fclose(fptr);
 }
 
 
