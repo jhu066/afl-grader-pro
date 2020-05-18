@@ -2302,8 +2302,9 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   int ifnew;
   s32 fd;
   u8  keeping = 0, res;
-  int score[3] = {0, 0, 0};  
-  int seedlevel, covscore;
+  //int score[3] = {0, 0, 0};  
+  int seedlevel;
+  float covscore;
   float rareness[3] = {0.0, 0.0, 0.0};
 
   //FILE *fptr = fopen("/home/jie/projects/hybrid-root1/bitmap_real.log", "a+");
@@ -2311,54 +2312,42 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   int bit_i = 0;
   for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
     if(trace_bits[bit_i] != 0) {
-      if(overall_bits[bit_i] == 0) { // new hit!
-        score[0] += 1;
-        overall_bits[bit_i] += trace_bits[bit_i];
-      }
-      else {
-        overall_bits[bit_i] += trace_bits[bit_i];
-        rareness[0] += (1.0 / overall_bits[bit_i]);
+      if(overall_bits[bit_i] < trace_bits[bit_i]) { // new max hit!
+        overall_bits[bit_i] = trace_bits[bit_i];
+        rareness[0] += (1.0 / overall_bits[bit_i]);        
       }
     }
 
     if(trace_bits_N4[bit_i] != 0) {
-      if(overall_bits[bit_i + MAP_SIZE] == 0) { // new hit at N4
-        score[1] += 1;
-        overall_bits[bit_i + MAP_SIZE] += trace_bits_N4[bit_i];
-      }
-      else {
-        overall_bits[bit_i + MAP_SIZE] += trace_bits_N4[bit_i];
+      if(overall_bits[bit_i + MAP_SIZE] < trace_bits_N4[bit_i]) { // new max hit at N4
+        overall_bits[bit_i + MAP_SIZE] = trace_bits_N4[bit_i];
         rareness[1] += (1.0 / overall_bits[bit_i + MAP_SIZE]);
       }
     }
 
     if(trace_bits_N8[bit_i] != 0) {
-      if(overall_bits[bit_i + 2*MAP_SIZE] == 0) { // new hit at N8
-        score[2] += 1;
-        overall_bits[bit_i + 2*MAP_SIZE] += trace_bits_N8[bit_i];
-      }
-      else {
-        overall_bits[bit_i + 2*MAP_SIZE] += trace_bits_N8[bit_i];
-        rareness[2] += (1.0 / overall_bits[bit_i + 2*MAP_SIZE]);
+      if(overall_bits[bit_i + 2*MAP_SIZE] < trace_bits_N8[bit_i]) { // new max hit at N8
+        overall_bits[bit_i + 2*MAP_SIZE] = trace_bits_N8[bit_i];
+        rareness[2] += (1.0 / overall_bits[bit_i + 2*MAP_SIZE]);        
       }
     }
   }
   
-  if(score[0]) {
+  if(rareness[0]) {
     seedlevel  = 2;
-    covscore = score[0];
+    covscore = rareness[0];
   }
-  else if(score[1]) {
+  else if(rareness[1]) {
     seedlevel  = 4;
-    covscore = score[1];
+    covscore = rareness[1];
   }
-  else if(score[2]) {
+  else if(rareness[2]) {
     seedlevel  = 8;
-    covscore = score[2];
+    covscore = rareness[2];
   }
   else {
     seedlevel = 9;
-    covscore = (int)(100 * rareness[0] + 10 * rareness[1] + rareness[0]);
+    covscore = 0;
   }
 
   // fprintf(fptr, "[afl-fuzz]: level: %d ~ %d-%d-%d--%f-%f-%f\n", seedlevel, score[0], score[1], score[2], rareness[0], rareness[1], rareness[2]);
@@ -2408,7 +2397,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   //Update path freq. No change to semantics
   khiter_t k;
   int ret;
-  u32 key_cksum = covscore;//afl_trace_p[0];//hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  u32 key_cksum = (u32)covscore;//afl_trace_p[0];//hash32(trace_bits, MAP_SIZE, HASH_CONST);
   k = kh_get(32, cksum2paths, key_cksum);
   if (k == kh_end(cksum2paths)){
       k = kh_put(32, cksum2paths, key_cksum, &ret);
@@ -2428,7 +2417,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 
   if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
 
-    fn = alloc_printf("%s/queue/id:%06u_%d_%d", out_dir, queued_paths, covscore, seedlevel);
+    fn = alloc_printf("%s/queue/id:%06u_%.2f_%d", out_dir, queued_paths, covscore, seedlevel);
     
 
     // if (is_trim_case && (len <= 10*1024)) {
@@ -2494,7 +2483,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 //                         kill_signal);
 // #endif /* ^!SIMPLE_FILES */
 
-      fn = alloc_printf("%s-crashes/queue/id:%06llu_%d_%d", out_dir, unique_crashes, covscore, seedlevel);
+      fn = alloc_printf("%s-crashes/queue/id:%06llu_%.2f_%d", out_dir, unique_crashes, covscore, seedlevel);
 
       if(unique_crashes == 0)
       {
