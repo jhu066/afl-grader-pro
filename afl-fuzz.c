@@ -136,14 +136,15 @@ static u8 is_qemu_log = 0;
 static u8 is_trim_case = 0;
 
 static u8* trace_bits;                /* SHM with instrumentation bitmap - now serve for N2/4/8 coverage */
-static u8* trace_bits_N4;             /* serve for N4 coverage */
-static u8* trace_bits_N8;             /* serve for N8 coverage */
+// static u8* trace_bits_N4;             /* serve for N4 coverage */
+// static u8* trace_bits_N8;             /* serve for N8 coverage */
 
-static uint64_t *new_n2_num,
-                *new_n4_num,
-                *new_n8_num;
+// static uint64_t *new_n2_num,
+//                 *new_n4_num,
+//                 *new_n8_num;
 
-static int overall_bits[MAP_SIZE * 3];     /* collect all hitcount with no exponential hitcount distortion */
+static int overall_bits[MAP_SIZE * 2];     /* 2 global bitmap, one for global max-hit, the other for accumulative hitcount  */
+static int *accu_bits;
 
 static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
@@ -1249,9 +1250,9 @@ static void setup_shm(void) {
 
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
-  memset(overall_bits, 0, 3 * MAP_SIZE * sizeof(int));
+  memset(overall_bits, 0, 2 * MAP_SIZE * sizeof(int));
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE * 3, IPC_CREAT | IPC_EXCL | 0600); //J.H. 3 bitmap 
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600); //J.H. only one map is enough 
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1275,9 +1276,9 @@ static void setup_shm(void) {
   // new_n2_num = (uint64_t *)(trace_bits + MAP_SIZE);
   // new_n4_num = (uint64_t *)(trace_bits + 2 * MAP_SIZE + 8);
   // new_n8_num = (uint64_t *)(trace_bits + 3 * MAP_SIZE + 16);
-  trace_bits_N4 = (u8 *)(trace_bits + MAP_SIZE + 8);
-  trace_bits_N8 = (u8 *)(trace_bits_N4 + MAP_SIZE + 8);
-
+  // trace_bits_N4 = (u8 *)(trace_bits + MAP_SIZE + 8);
+  // trace_bits_N8 = (u8 *)(trace_bits_N4 + MAP_SIZE + 8);
+  accu_bits = overall_bits + MAP_SIZE;
   // overall_bits = shmat(shm_id, NULL, 0);
   // if (!overall_bits) PFATAL("overall_bits shmat() failed");
 
@@ -1620,7 +1621,7 @@ static u8 run_target(char** argv) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, 3 * MAP_SIZE); // J.H. refresh all 3 ? need?
+  memset(trace_bits, 0, MAP_SIZE); // J.H. refresh the bitmap for new seed coming 
   // new_n2_num[0] = 0;
   // new_n4_num[0] = 0;
   // new_n8_num[0] = 0;
@@ -2302,71 +2303,103 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   int ifnew;
   s32 fd;
   u8  keeping = 0, res;
-  //int score[3] = {0, 0, 0};  
   int seedlevel;
-  float covscore;
-  float rareness[3] = {0.0, 0.0, 0.0};
+  float seedscore;
+  float covscore = 0.0;
+  float rareness = 0.0;
 
   //FILE *fptr = fopen("/home/jie/projects/hybrid-root1/bitmap_real.log", "a+");
 
   int bit_i = 0;
-  for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
-    if(trace_bits[bit_i] != 0) {
-      if(overall_bits[bit_i] < trace_bits[bit_i]) { // new max hit!
-        overall_bits[bit_i] = trace_bits[bit_i];
-        rareness[0] += (1.0 / overall_bits[bit_i]);        
-      }
+  int diff = 0;
+  // validate and update two global bitmap using trace_bits!
+  for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) {
+    if(trace_bits[bit_i] == 0) continue;
+    // here is non-zero bits
+    if(trace_bits[bit_i] > overall_bits[bit_i]) { // new max-hit at N2 level
+    //if(overall_bits[bit_i] == 0) { // new flip
+      diff = trace_bits[bit_i] - overall_bits[bit_i];
+      covscore = covscore + 1.0 * diff / trace_bits[bit_i];
+      overall_bits[bit_i] = trace_bits[bit_i];
     }
 
-    if(trace_bits_N4[bit_i] != 0) {
-      if(overall_bits[bit_i + MAP_SIZE] < trace_bits_N4[bit_i]) { // new max hit at N4
-        overall_bits[bit_i + MAP_SIZE] = trace_bits_N4[bit_i];
-        rareness[1] += (1.0 / overall_bits[bit_i + MAP_SIZE]);
-      }
-    }
-
-    if(trace_bits_N8[bit_i] != 0) {
-      if(overall_bits[bit_i + 2*MAP_SIZE] < trace_bits_N8[bit_i]) { // new max hit at N8
-        overall_bits[bit_i + 2*MAP_SIZE] = trace_bits_N8[bit_i];
-        rareness[2] += (1.0 / overall_bits[bit_i + 2*MAP_SIZE]);        
-      }
+    // now update the accumulative hitcount bitmap
+    if(accu_bits[bit_i] >= 1024) continue;
+    
+    // not hitting threshold yet, update! 
+    accu_bits[bit_i] += trace_bits[bit_i];
+    if(!covscore) { // if covscore valid, no need to calculate rareness anymore.
+      rareness += 1.0 * trace_bits[bit_i] / accu_bits[bit_i];
     }
   }
   
-  if(rareness[0]) {
-    seedlevel  = 2;
-    covscore = rareness[0];
-  }
-  else if(rareness[1]) {
-    seedlevel  = 4;
-    covscore = rareness[1];
-  }
-  else if(rareness[2]) {
-    seedlevel  = 8;
-    covscore = rareness[2];
+  // decide if this seed is new-cov N2 seed or rare-rank no-cov seed
+  if(covscore > 0) {
+    seedlevel = 2;
+    seedscore = covscore;
   }
   else {
-    seedlevel = 9;
-    covscore = 0;
+    seedlevel = 9; // means no new coverage, compatible to old setting
+    seedscore = rareness;
   }
+
+  // for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
+  //   if(trace_bits[bit_i] != 0) {
+  //     if(overall_bits[bit_i] < trace_bits[bit_i]) { // new max hit!
+  //       overall_bits[bit_i] = trace_bits[bit_i];
+  //       rareness[0] += (1.0 / overall_bits[bit_i]);        
+  //     }
+  //   }
+
+  //   if(trace_bits_N4[bit_i] != 0) {
+  //     if(overall_bits[bit_i + MAP_SIZE] < trace_bits_N4[bit_i]) { // new max hit at N4
+  //       overall_bits[bit_i + MAP_SIZE] = trace_bits_N4[bit_i];
+  //       rareness[1] += (1.0 / overall_bits[bit_i + MAP_SIZE]);
+  //     }
+  //   }
+
+  //   if(trace_bits_N8[bit_i] != 0) {
+  //     if(overall_bits[bit_i + 2*MAP_SIZE] < trace_bits_N8[bit_i]) { // new max hit at N8
+  //       overall_bits[bit_i + 2*MAP_SIZE] = trace_bits_N8[bit_i];
+  //       rareness[2] += (1.0 / overall_bits[bit_i + 2*MAP_SIZE]);        
+  //     }
+  //   }
+  // }
+  
+  // if(rareness[0]) {
+  //   seedlevel  = 2;
+  //   covscore = rareness[0];
+  // }
+  // else if(rareness[1]) {
+  //   seedlevel  = 4;
+  //   covscore = rareness[1];
+  // }
+  // else if(rareness[2]) {
+  //   seedlevel  = 8;
+  //   covscore = rareness[2];
+  // }
+  // else {
+  //   seedlevel = 9;
+  //   covscore = 0;
+  // }
 
   // fprintf(fptr, "[afl-fuzz]: level: %d ~ %d-%d-%d--%f-%f-%f\n", seedlevel, score[0], score[1], score[2], rareness[0], rareness[1], rareness[2]);
   // fclose(fptr);
 
   // if(new_n2_num[0] > 0) {
-  //   score = new_n2_num[0];
+  //   seedscore = new_n2_num[0];
   //   seedlevel = 2;
   // }
   // else if(new_n4_num[0] > 0) {
-  //   score = new_n4_num[0];
+  //   seedscore = new_n4_num[0];
   //   seedlevel = 4;
   // }
   // else if(new_n8_num[0] > 0) {
-  //   score = new_n8_num[0];
+  //   seedscore = new_n8_num[0];
   //   seedlevel = 8;
   // }
   // else {  // basically only executed when starved. 
-  //   score = 0;
+  //   seedscore = 0;
   //   // calculate the rareness score of 3 level ngram bitmap
 
   //   seedlevel = 9;
@@ -2397,7 +2430,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   //Update path freq. No change to semantics
   khiter_t k;
   int ret;
-  u32 key_cksum = (u32)covscore;//afl_trace_p[0];//hash32(trace_bits, MAP_SIZE, HASH_CONST);
+  u32 key_cksum = (u32)seedscore;//afl_trace_p[0];//hash32(trace_bits, MAP_SIZE, HASH_CONST);
   k = kh_get(32, cksum2paths, key_cksum);
   if (k == kh_end(cksum2paths)){
       k = kh_put(32, cksum2paths, key_cksum, &ret);
@@ -2417,7 +2450,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 
   if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
 
-    fn = alloc_printf("%s/queue/id:%06u_%.2f_%d", out_dir, queued_paths, covscore, seedlevel);
+    fn = alloc_printf("%s/queue/id:%06u_%.5f_%d", out_dir, queued_paths, seedscore, seedlevel);
     
 
     // if (is_trim_case && (len <= 10*1024)) {
@@ -2427,7 +2460,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     add_to_queue(fn, len, 0);
 
     //if(ifnew) {
-    if(covscore) {
+    if(seedscore) {
       queue_top->has_new_cov = 1;
       queued_with_cov++;
     }
@@ -2483,7 +2516,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 //                         kill_signal);
 // #endif /* ^!SIMPLE_FILES */
 
-      fn = alloc_printf("%s-crashes/queue/id:%06llu_%.2f_%d", out_dir, unique_crashes, covscore, seedlevel);
+      fn = alloc_printf("%s-crashes/queue/id:%06llu_%.5f_%d", out_dir, unique_crashes, seedscore, seedlevel);
 
       if(unique_crashes == 0)
       {
@@ -3766,12 +3799,12 @@ static void sync_fuzzers(char** argv) {
     // ACTF("target_sync_dir: %s", sd_ent->d_name);
 
     // here check if the current syncing directory is N2/N4/N8
-    int del; // for path-prefix, will be 9, for n-gram: 2,4,8
+    //int del; // for path-prefix, will be 9, for n-gram: 2,4,8
     // if (sscanf(sd_ent->d_name, "Kirenenko-N%d", &level) != 1) {
     //   PFATAL("Invalid Kirenenko-NX directory!\n");
     // }
-    if(!strcmp(sd_ent->d_name, "Kirenenko-novel")) del = 1;  // means ce seeds
-    if(!strcmp(sd_ent->d_name, "Kirenenko-fuzz")) del = 0;   // means fuzz seeds
+    // if(!strcmp(sd_ent->d_name, "Kirenenko-novel")) del = 1;  // means ce seeds
+    // if(!strcmp(sd_ent->d_name, "Kirenenko-fuzz")) del = 0;   // means fuzz seeds
     
 
     int i;
@@ -3830,11 +3863,11 @@ static void sync_fuzzers(char** argv) {
             sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
             syncing_case < min_accept) {
             // delete the ones below min_accept!
-            // if(qd_ent->d_name[0] != '.' && syncing_case < min_accept && del) { // meaning ce seeds, feel free to delete this copy
-            //   deletetscs = alloc_printf("%s/%s", qd_path, qd_ent->d_name);
-            //   if(unlink(deletetscs)) 
-            //     PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", deletetscs, syncing_case, min_accept);
-            // }            
+            if(qd_ent->d_name[0] != '.' && syncing_case < min_accept) {//&& del) { // meaning ce seeds, feel free to delete this copy
+              deletetscs = alloc_printf("%s/%s", qd_path, qd_ent->d_name);
+              if(unlink(deletetscs)) 
+                PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", deletetscs, syncing_case, min_accept);
+            }            
             continue; // if the tscs has been executed before, skip it. 
         }
 
@@ -3881,7 +3914,7 @@ static void sync_fuzzers(char** argv) {
           if (stop_soon) return;
 
           syncing_party = sd_ent->d_name;
-          queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path, del); // if the file is interesting, where the validation of file happens! 
+          queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path, 0); // if the file is interesting, where the validation of file happens! 
           syncing_party = 0;
 
           munmap(mem, st.st_size);

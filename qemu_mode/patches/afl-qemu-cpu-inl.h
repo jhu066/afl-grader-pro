@@ -60,9 +60,9 @@
 
 /* This is equivalent to afl-as.h: */
 
-static unsigned char *afl_area_ptr,
-                     *afl_area_ptr_n4,
-                     *afl_area_ptr_n8;
+static unsigned char *afl_area_ptr;//,
+                    //  *afl_area_ptr_n4,
+                    //  *afl_area_ptr_n8;
 
 
 /* Exported variables populated by the code patched into elfload.c: */
@@ -134,8 +134,8 @@ static void afl_setup(void) {
 
     shm_id = atoi(id_str);
     afl_area_ptr = shmat(shm_id, NULL, 0);
-    afl_area_ptr_n4 = afl_area_ptr + MAP_SIZE;
-    afl_area_ptr_n8 = afl_area_ptr_n4 + MAP_SIZE;
+    // afl_area_ptr_n4 = afl_area_ptr + MAP_SIZE + 8;
+    // afl_area_ptr_n8 = afl_area_ptr_n4 + MAP_SIZE + 8;
 
 
     if (afl_area_ptr == (void*)-1) exit(1);
@@ -231,7 +231,7 @@ inline uint32_t bitmap_hash(acc)
 }
 
 // mark
-#define N_GRAM_POW2 3
+#define N_GRAM_POW2 1
 #define N_GRAM (1 << N_GRAM_POW2)
 
 /* The equivalent of the tuple logging routine from afl-as.h. */
@@ -259,8 +259,7 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   for(i = N_GRAM - 1; i > 0; i--) {
     n_elem[i] = n_elem[i-1];
   }
-  n_elem[0] = (cur_loc >> 1) ^ next_pc;
-  //n_elem[0] = cur_loc * 7 + next_pc;
+  n_elem[0] = (cur_loc >> 1) ^ next_pc; // edge as unit of each N-gram
   acc = n_elem[0];
   
   // calculate n-gram at 3 level and update new_nx_num along the way
@@ -270,15 +269,27 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
     if(i == 1) {  // update n2 level hash map
       tmp = acc & (MAP_SIZE - 1);
       afl_area_ptr[tmp] += 1;
+      // if(!afl_area_ptr[tmp]) {
+      //   new_n2_num[0] += 1;
+      //   afl_area_ptr[tmp] = 1;
+      // }
     }
-    if(i == 3) {
-      tmp = acc & (MAP_SIZE - 1);
-      afl_area_ptr_n4[tmp] += 1;
-    }
-    if(i == 7) {
-      tmp = acc & (MAP_SIZE - 1);
-      afl_area_ptr_n8[tmp] += 1;
-    }
+    // if(i == 3) {
+    //   tmp = acc & (MAP_SIZE - 1);
+    //   //afl_area_ptr_n4[tmp] += 1;
+    //   if(!afl_area_ptr_n4[tmp]) {
+    //     new_n4_num[0] += 1;
+    //     afl_area_ptr_n4[tmp] = 1;
+    //   }
+    // }
+    // if(i == 7) {
+    //   tmp = acc & (MAP_SIZE - 1);
+    //   //afl_area_ptr_n8[tmp] += 1;
+    //   if(!afl_area_ptr_n8[tmp]) {
+    //     new_n8_num[0] += 1;
+    //     afl_area_ptr_n8[tmp] = 1;
+    //   }
+    // }
   }
 }
 
