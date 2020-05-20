@@ -80,6 +80,7 @@ int sync_max_seeds_per = 20;
 static u8 //*in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
           *out_dir,                   /* Working & output directory       */
+          *coverage_dir,              /* coverage pending queue */
           // *local_out_dir,
           // *remote_out_dir,
           *sync_dir,                  /* Synchronization directory        */
@@ -3864,9 +3865,17 @@ static void sync_fuzzers(char** argv) {
             syncing_case < min_accept) {
             // delete the ones below min_accept!
             if(qd_ent->d_name[0] != '.' && syncing_case < min_accept) {//&& del) { // meaning ce seeds, feel free to delete this copy
-              deletetscs = alloc_printf("%s/%s", qd_path, qd_ent->d_name);
-              if(unlink(deletetscs)) 
-                PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", deletetscs, syncing_case, min_accept);
+               
+              path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); 
+              // move up to triage folder.
+              if(coverage_dir) {  
+                deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
+                rename(path, deletetscs);
+              }
+              else {
+                if(unlink(path)) 
+                  PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", path, syncing_case, min_accept);
+              }
             }            
             continue; // if the tscs has been executed before, skip it. 
         }
@@ -4892,7 +4901,7 @@ int main(int argc, char** argv) {
 
   
 
-  while ((opt = getopt(argc, argv, "+o:f:m:t:T:dnCB:S:M:QLs:r")) > 0)
+  while ((opt = getopt(argc, argv, "+k:o:f:m:t:T:dnCB:S:M:QLs:r")) > 0)
   {
     // ACTF("opt: %c", opt);
     switch (opt) {
@@ -4904,7 +4913,13 @@ int main(int argc, char** argv) {
 
       //   if (!strcmp(in_dir, "-")) in_place_resume = 1;
 
-      //   break;
+      //   break
+      case 'k': /* coverage collecting dir */
+        
+        if(coverage_dir) FATAL("Multiple -k options not supported");
+        coverage_dir = optarg;
+
+        break;
 
       case 'o': /* output dir */
 
