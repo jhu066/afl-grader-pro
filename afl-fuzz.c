@@ -3860,23 +3860,20 @@ static void sync_fuzzers(char** argv) {
         s32 fd;
         struct stat st;
 
-        if (qd_ent->d_name[0] == '.' ||
-            sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
-            syncing_case < min_accept) {
-            // delete the ones below min_accept!
-            if(qd_ent->d_name[0] != '.' && syncing_case < min_accept) {//&& del) { // meaning ce seeds, feel free to delete this copy
+        if (qd_ent->d_name[0] == '.') continue;
+
+        if (sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || syncing_case < min_accept) {
+            // move old ones below min_accept!
                
-              path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); 
-              // move up to triage folder.
-              if(coverage_dir) {  
-                deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
-                rename(path, deletetscs);
-              }
-              else {
-                if(unlink(path)) 
-                  PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", path, syncing_case, min_accept);
-              }
-            }            
+            path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); 
+            // move up to triage folder.
+            if(coverage_dir) {  
+              deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
+              rename(path, deletetscs);
+            }
+            else {
+              if(unlink(path)) PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", path, syncing_case, min_accept);
+            }                        
             continue; // if the tscs has been executed before, skip it. 
         }
 
