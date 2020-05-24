@@ -2319,8 +2319,8 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     // here is non-zero bits
     if(trace_bits[bit_i] > overall_bits[bit_i]) { // new max-hit at N2 level
     //if(overall_bits[bit_i] == 0) { // new flip
-      diff = trace_bits[bit_i] - overall_bits[bit_i];
-      covscore = covscore + 1.0 * diff / trace_bits[bit_i];
+      // diff = trace_bits[bit_i] - overall_bits[bit_i];
+      // covscore = covscore + 1.0 * diff / trace_bits[bit_i];
       overall_bits[bit_i] = trace_bits[bit_i];
     }
 
@@ -2329,9 +2329,9 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     
     // not hitting threshold yet, update! 
     accu_bits[bit_i] += trace_bits[bit_i];
-    if(!covscore) { // if covscore valid, no need to calculate rareness anymore.
-      rareness += 1.0 * trace_bits[bit_i] / accu_bits[bit_i];
-    }
+    // if(!covscore) { // if covscore valid, no need to calculate rareness anymore.
+    //   rareness += 1.0 * trace_bits[bit_i] / accu_bits[bit_i];
+    // }
   }
   
   // decide if this seed is new-cov N2 seed or rare-rank no-cov seed
@@ -2344,90 +2344,6 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     seedscore = rareness;
   }
 
-  // for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
-  //   if(trace_bits[bit_i] != 0) {
-  //     if(overall_bits[bit_i] < trace_bits[bit_i]) { // new max hit!
-  //       overall_bits[bit_i] = trace_bits[bit_i];
-  //       rareness[0] += (1.0 / overall_bits[bit_i]);        
-  //     }
-  //   }
-
-  //   if(trace_bits_N4[bit_i] != 0) {
-  //     if(overall_bits[bit_i + MAP_SIZE] < trace_bits_N4[bit_i]) { // new max hit at N4
-  //       overall_bits[bit_i + MAP_SIZE] = trace_bits_N4[bit_i];
-  //       rareness[1] += (1.0 / overall_bits[bit_i + MAP_SIZE]);
-  //     }
-  //   }
-
-  //   if(trace_bits_N8[bit_i] != 0) {
-  //     if(overall_bits[bit_i + 2*MAP_SIZE] < trace_bits_N8[bit_i]) { // new max hit at N8
-  //       overall_bits[bit_i + 2*MAP_SIZE] = trace_bits_N8[bit_i];
-  //       rareness[2] += (1.0 / overall_bits[bit_i + 2*MAP_SIZE]);        
-  //     }
-  //   }
-  // }
-  
-  // if(rareness[0]) {
-  //   seedlevel  = 2;
-  //   covscore = rareness[0];
-  // }
-  // else if(rareness[1]) {
-  //   seedlevel  = 4;
-  //   covscore = rareness[1];
-  // }
-  // else if(rareness[2]) {
-  //   seedlevel  = 8;
-  //   covscore = rareness[2];
-  // }
-  // else {
-  //   seedlevel = 9;
-  //   covscore = 0;
-  // }
-
-  // fprintf(fptr, "[afl-fuzz]: level: %d ~ %d-%d-%d--%f-%f-%f\n", seedlevel, score[0], score[1], score[2], rareness[0], rareness[1], rareness[2]);
-  // fclose(fptr);
-
-  // if(new_n2_num[0] > 0) {
-  //   seedscore = new_n2_num[0];
-  //   seedlevel = 2;
-  // }
-  // else if(new_n4_num[0] > 0) {
-  //   seedscore = new_n4_num[0];
-  //   seedlevel = 4;
-  // }
-  // else if(new_n8_num[0] > 0) {
-  //   seedscore = new_n8_num[0];
-  //   seedlevel = 8;
-  // }
-  // else {  // basically only executed when starved. 
-  //   seedscore = 0;
-  //   // calculate the rareness score of 3 level ngram bitmap
-
-  //   seedlevel = 9;
-  // }
-  
-
-  // this is my real path validation
-  //uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE);
-  // kh_put(p64, hash_value_set, afl_trace_p[0], &ifnew);
-
-  // printout the real content of this bitmap now:
- /*  FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/bitmap_real.log", "a+");
-  // fprintf(fptr, "[afl-fuzz]: %s - %lu\n", path, afl_trace_p[0]);
-  // fclose(fptr);
- int bit_i = 0;
-  double rareness = 0.0;
-  for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) { // here i have access to the current bitmap and overall bitmap!
-    // optimized for frequent cases: no hit
-    if (trace_bits[bit_i] == 0)
-      continue;
-    // fprintf(fptr, "bitmap[%d]: %d\n", bit_i, trace_bits[bit_i], trace_bits[bit_i]);
-    overall_bits[bit_i] += trace_bits[bit_i]; // count the new hit count as well! next calculate the rareness score
-    rareness += (1.0 / overall_bits[bit_i]);
-  }
-  fprintf(fptr, "path: %s, rareness score being: %.5f\n", path, rareness);
-  fclose(fptr);
-*/
   //Update path freq. No change to semantics
   khiter_t k;
   int ret;
@@ -3860,21 +3776,16 @@ static void sync_fuzzers(char** argv) {
         s32 fd;
         struct stat st;
 
-        if (qd_ent->d_name[0] == '.') continue;
+        if (qd_ent->d_name[0] == '.' ||
+            sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
+            syncing_case < min_accept) {
 
-        if (sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || syncing_case < min_accept) {
-            // move old ones below min_accept!
-               
-            path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); 
-            // move up to triage folder.
-            if(coverage_dir) {  
-              deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
-              rename(path, deletetscs);
-            }
-            else {
-              if(unlink(path)) PFATAL("Unable to remove '%s', syncing_case/min_accept: %d/%d", path, syncing_case, min_accept);
-            }                        
-            continue; // if the tscs has been executed before, skip it. 
+              if(syncing_case < min_accept) {
+                path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); // the new tscs's path! 
+                deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
+                rename(path, deletetscs);
+              }
+              continue;
         }
 
         if(i == 0 && num_checked_seeds == sync_max_seeds_per)
@@ -3921,6 +3832,10 @@ static void sync_fuzzers(char** argv) {
 
           syncing_party = sd_ent->d_name;
           queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path, 0); // if the file is interesting, where the validation of file happens! 
+          // after this seed is done, move to the cov-plot folder. 
+          // deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
+          // rename(path, deletetscs);
+
           syncing_party = 0;
 
           munmap(mem, st.st_size);
