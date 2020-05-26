@@ -56,8 +56,8 @@
 /* Number of calibration cycles per every new test case (and for test
    cases that show variable behavior): */
 
-#define CAL_CYCLES          10
-#define CAL_CYCLES_LONG     40
+#define CAL_CYCLES          1//10
+#define CAL_CYCLES_LONG     2//40
 
 /* The same, but when AFL_NO_VAR_CHECK is set in the environment: */
 
