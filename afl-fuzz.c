@@ -2369,7 +2369,10 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 
   if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
 
-    fn = alloc_printf("%s/queue/id:%06u_%.5f_%d", out_dir, queued_paths, seedscore, seedlevel);
+    if(seedlevel == 2) 
+      fn = alloc_printf("%s/queue/id:%06u_%.5f", out_dir, queued_paths, seedscore);
+    else 
+      fn = alloc_printf("%s-path/_queue/id:%06u_%.5f", out_dir, queued_paths, seedscore);
     tmp = alloc_printf("%s/queue/tmp", out_dir);
 
     // if (is_trim_case && (len <= 10*1024)) {
@@ -2436,8 +2439,11 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 //       fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
 //                         kill_signal);
 // #endif /* ^!SIMPLE_FILES */
-
-      fn = alloc_printf("%s-crashes/queue/id:%06llu_%.5f_%d", out_dir, unique_crashes, seedscore, seedlevel);
+      if(seedlevel == 2)
+        fn = alloc_printf("%s/crashes/id:%06llu_%.5f", out_dir, unique_crashes);
+      else
+        fn = alloc_printf("%s-path/_crashes/id:%06llu_%.5f", out_dir, unique_crashes);
+      
       if(unique_crashes == 0)
       {
         first_crash_time = get_cur_time();
@@ -3713,7 +3719,7 @@ static void sync_fuzzers(char** argv) {
 
     /* Skip dot files and our own output directory, and not fuzz dir. */
 
-    if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name) || !startswith(sd_ent->d_name, "Kirenenko")) continue;
+    if (sd_ent->d_name[0] == '.' || !strcmp(sync_id, sd_ent->d_name) || !startswith(sd_ent->d_name, "kirenenko")) continue;
 
     /* Skip anything that doesn't have a queue/ subdirectory. */
     // ACTF("target_sync_dir: %s", sd_ent->d_name);
@@ -3786,14 +3792,15 @@ static void sync_fuzzers(char** argv) {
             
             if(syncing_case < min_accept) {
               path = alloc_printf("%s/%s", qd_path, qd_ent->d_name);              
-              deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
-              rename(path, deletetscs);                  
+              // deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
+              // rename(path, deletetscs);      
+              unlink(path);            
               continue; // if the tscs has been executed before, skip it. 
             }
         }
 
-        if(i == 0 && num_checked_seeds == sync_max_seeds_per)
-          break;
+        // if(i == 0 && num_checked_seeds == sync_max_seeds_per)
+        //   break;
 
         /* OK, sounds like a new one. Let's give it a try. */
 
@@ -3828,8 +3835,8 @@ static void sync_fuzzers(char** argv) {
           /* See what happens. We rely on save_if_interesting() to catch major
              errors and save the test case. */
 
-          FILE *fptr = fopen("/home/jie/projects/covrare-exp-13/debug.log", "a+");
-          fprintf(fptr, "[afl-fuzz]: %s - %d - %d\n", path, syncing_case, st.st_size);
+          // FILE *fptr = fopen("/home/jie/projects/covrare-exp-13/debug.log", "a+");
+          // fprintf(fptr, "[afl-fuzz]: %s - %d - %d\n", path, syncing_case, st.st_size);
           // fclose(fptr);
 
           write_to_testcase(mem, st.st_size); // so for some reason, firstly modify the file for testing, then execute...
@@ -3837,13 +3844,13 @@ static void sync_fuzzers(char** argv) {
           fault = run_target(argv); // here the file is finally executed!
 
           if (stop_soon) return;
-          fprintf(fptr, "[afl-fuzz]: %s - %d - before\n", path, syncing_case);
+          // fprintf(fptr, "[afl-fuzz]: %s - %d - before\n", path, syncing_case);
           syncing_party = sd_ent->d_name;
           queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path, 0); // if the file is interesting, where the validation of file happens! 
           syncing_party = 0;
           
-          fprintf(fptr, "[afl-fuzz]: %s - %d - after\n", path, syncing_case);
-          fclose(fptr);
+          // fprintf(fptr, "[afl-fuzz]: %s - %d - after\n", path, syncing_case);
+          // fclose(fptr);
 
           munmap(mem, st.st_size);
 
