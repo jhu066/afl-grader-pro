@@ -1253,7 +1253,7 @@ static void setup_shm(void) {
   memset(virgin_crash, 255, MAP_SIZE);
   memset(overall_bits, 0, 2 * MAP_SIZE * sizeof(int));
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600); //J.H. only one map is enough 
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 8, IPC_CREAT | IPC_EXCL | 0600); //J.H. only one map is enough 
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1622,7 +1622,7 @@ static u8 run_target(char** argv) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE); // J.H. refresh the bitmap for new seed coming 
+  memset(trace_bits, 0, MAP_SIZE+8); // J.H. refresh the bitmap for new seed coming 
   // new_n2_num[0] = 0;
   // new_n4_num[0] = 0;
   // new_n8_num[0] = 0;
@@ -2306,47 +2306,13 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   int ifnew;
   s32 fd;
   u8  keeping = 0, res;
-  int seedlevel;
-  float seedscore;
-  float covscore = 0.0;
-  float rareness = 0.0;
+  int seedlevel = 0;
 
-  //FILE *fptr = fopen("/home/jie/projects/hybrid-root1/bitmap_real.log", "a+");
-
-  int bit_i = 0;
-  int diff = 0;
-  // validate and update two global bitmap using trace_bits!
-  for(bit_i = 0; bit_i < MAP_SIZE; bit_i ++) {
-    if(trace_bits[bit_i] == 0) continue;
-    // here is non-zero bits
-    if(trace_bits[bit_i] > overall_bits[bit_i]) { // new max-hit at N2 level
-    //if(overall_bits[bit_i] == 0) { // new flip
-      diff = trace_bits[bit_i] - overall_bits[bit_i];
-      covscore = covscore + 1.0 * diff / trace_bits[bit_i];
-      overall_bits[bit_i] = trace_bits[bit_i];
-    }
-
-    // now update the accumulative hitcount bitmap
-    if(accu_bits[bit_i] >= 1024) continue;
-    
-    // not hitting threshold yet, update! 
-    accu_bits[bit_i] += trace_bits[bit_i];
-    if(!covscore) { // if covscore valid, no need to calculate rareness anymore.
-      rareness += 1.0 * trace_bits[bit_i] / accu_bits[bit_i];
-    }
+  if(hnb = has_new_bits(virgin_bits)) {
+    seedlevel = 2;      // edge seed! 
   }
-  
-  // decide if this seed is new-cov N2 seed or rare-rank no-cov seed
-  if(covscore > 0) {
-    seedlevel = 2;
-    seedscore = covscore;
-  }
-  else {
-    seedlevel = 9; // means no new coverage, compatible to old setting
-    seedscore = rareness;
-  }
+  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE); 
 
-  //Update path freq. No change to semantics
   khiter_t k;
   int ret;
   u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
@@ -2359,21 +2325,31 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
   else {
     ++kh_value(cksum2paths, k);
   } 
-  
+
+  kh_put(p64, hash_value_set, afl_trace_p[0], &ifnew);  
   
   // for debug log 
-  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/grader.log", "a+");
-  // fprintf(fptr, "[afl-fuzz]: %s - %lu - uniq=%d, count=%d\n", path, afl_trace_p[0], ifnew, kh_value(cksum2paths, k));
-  // fclose(fptr);
+  FILE *fptr = fopen("/home/cju/sp2021/e2e_sche/grader.log", "a+");
+  fprintf(fptr, "[afl-grader]: %lu - uniq=%d, edgecov: %d\n", afl_trace_p[0], ifnew, seedlevel);
+  fprintf(fptr, "[afl-grader]: %s\n", path);
+  fclose(fptr);
   // for debug log 
+  if(seedlevel != 2 && !ifnew) {
+    return 0;
+  }
 
   if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
 
-    if(seedlevel == 2) 
-      fn = alloc_printf("%s/queue/id:%06u_%.5f", out_dir, queued_paths, seedscore);
-    else 
-      fn = alloc_printf("%s-path/_queue/id:%06u_%.5f", out_dir, queued_paths, seedscore);
-    tmp = alloc_printf("%s/queue/tmp", out_dir);
+    if(seedlevel == 2) {
+      fn = alloc_printf("%s/queue/id:%06u", out_dir, queued_paths);
+      tmp = alloc_printf("%s/queue/tmp", out_dir);
+    } else if(ifnew) {
+      fn = alloc_printf("%s-path/_queue/id:%06u", out_dir, queued_paths);
+      tmp = alloc_printf("%s-path/_queue/tmp", out_dir);
+    } else {
+      return 0; // no need to keep this seed, no edge or path hit! 
+    }
+    
 
     // if (is_trim_case && (len <= 10*1024)) {
     //   len = minimize_case(argv, mem, len, key_cksum, fn);
@@ -2382,7 +2358,7 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
     add_to_queue(fn, len, 0);
 
     //if(ifnew) {
-    if(seedscore) {
+    if(seedlevel == 2) {
       queue_top->has_new_cov = 1;
       queued_with_cov++;
     }
@@ -2439,10 +2415,15 @@ static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8*
 //       fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
 //                         kill_signal);
 // #endif /* ^!SIMPLE_FILES */
-      if(seedlevel == 2)
-        fn = alloc_printf("%s/crashes/id:%06llu_%.5f", out_dir, unique_crashes);
-      else
-        fn = alloc_printf("%s-path/_crashes/id:%06llu_%.5f", out_dir, unique_crashes);
+      if(seedlevel == 2) {
+        fn = alloc_printf("%s/crashes/id:%06llu", out_dir, unique_crashes);
+      }
+      else if(ifnew) {
+        fn = alloc_printf("%s-path/_crashes/id:%06llu", out_dir, unique_crashes);
+      }
+      else {
+        return 0;
+      }
       
       if(unique_crashes == 0)
       {
@@ -3805,7 +3786,7 @@ static void sync_fuzzers(char** argv) {
         /* OK, sounds like a new one. Let's give it a try. */
 
         if (syncing_case >= next_min_accept)
-          next_min_accept = syncing_case + 1;        
+          next_min_accept = syncing_case + 1;
 
         path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); // the new tscs's path! 
 
