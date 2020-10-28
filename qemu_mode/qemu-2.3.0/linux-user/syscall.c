@@ -5588,12 +5588,14 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             if (!(p = lock_user(VERIFY_WRITE, arg2, arg3, 0)))
                 goto efault;
             ret = get_errno(read(arg1, p, arg3));
+/*
             if(ret == 0)
             {
               empty_read_cnts++;
               if(empty_read_cnts >3)
                 goto _terminate;
             }
+*/
 
             unlock_user(p, arg2, ret);
         }

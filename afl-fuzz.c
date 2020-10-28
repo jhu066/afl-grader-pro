@@ -62,7 +62,7 @@
 #endif /* __APPLE__ || __FreeBSD__ || __OpenBSD__ */
 
 #ifndef SIMPLE_FILES
-#  define CASE_PREFIX "id:"
+#  define CASE_PREFIX "id-"
 #else
 #  define CASE_PREFIX "id_"
 #endif
@@ -1594,7 +1594,6 @@ static void init_forkserver(char** argv) {
 }
 
 float get_rare(u8* trace_map) {
-  return 0.0;
   int i;
   float score = 0;
   for (i = 0; i < MAP_SIZE; i++) {
@@ -2303,7 +2302,7 @@ static void write_crash_readme(void) {
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
 
-static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
+static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault, u8* orig_path) {
 
   u8  *fn = "";
   u8  *tmp = "";
@@ -2329,21 +2328,21 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
     
-
 // #ifndef SIMPLE_FILES
     if(hnb) { // edge queue
-      fn = alloc_printf("%s/queue/id:%08u_%d", out_dir, my_edges, filter_index);
+      fn = alloc_printf("%s/queue/id:%06u", out_dir, my_edges);
       FILE *edge_rare = fopen(rareness_log_edge, "a+");
       //flock(fileno(edge_rare), LOCK_EX);
-      fprintf(edge_rare, "%.8f,id:%08u_%d,eq\n", rareness, my_edges, filter_index);
+      fprintf(edge_rare, "%.8f,id:%06u,eq\n", rareness, my_edges);
       //flock(fileno(edge_rare), LOCK_UN);
       fclose(edge_rare);
       my_edges += 1;
     } else if(ifnew) {    // path queue      
-      fn = alloc_printf("%s-path/_queue/id:%08u_%d", out_dir, my_paths, filter_index);
+      //fn = alloc_printf("%s-path/_queue/id-%08u", out_dir, my_paths);
+      fn = alloc_printf("/out/path/_queue/id-%08u", my_paths);
       FILE *path_rare = fopen(rareness_log_path, "a+");
       //flock(fileno(path_rare), LOCK_EX);
-      fprintf(path_rare, "%.8f,id:%08u_%d,pq\n", rareness, my_paths, filter_index);
+      fprintf(path_rare, "%.8f,id-%08u,pq\n", rareness, my_paths);
       //flock(fileno(path_rare), LOCK_UN);
       fclose(path_rare);
       my_paths += 1;
@@ -2386,10 +2385,13 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     // if (res == FAULT_ERROR)
     //   FATAL("Unable to execute target application");
     //tmp = alloc_printf("%s/tmp", out_dir);
+#if 1
     fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) PFATAL("Unable to create '%s'", fn);
     ck_write(fd, mem, len, fn);
     close(fd);
+#endif
+		//rename(orig_path,fn);
 
     //rename(tmp, fn);
     keeping = 1;
@@ -2422,7 +2424,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/hangs/id:%08llu,%s", out_dir,
+      fn = alloc_printf("%s/hangs/id-%08llu,%s", out_dir,
                         unique_hangs, describe_op(0));
 
 #else
@@ -2463,18 +2465,18 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 // #ifndef SIMPLE_FILES
       if(hnb) {
-        fn = alloc_printf("%s/crashes/id:%08llu_%d", out_dir, my_edge_crashes, filter_index);
+        fn = alloc_printf("%s/crashes/id-%08llu", out_dir, my_edge_crashes);
         FILE *edge_rare = fopen(rareness_log_edge, "a+");
         flock(fileno(edge_rare), LOCK_EX);
-        fprintf(edge_rare, "%.8f,id:%08u_%d,ec\n", rareness, my_edge_crashes, filter_index);
+        fprintf(edge_rare, "%.8f,id-%08u,ec\n", rareness, my_edge_crashes);
         flock(fileno(edge_rare), LOCK_UN);
         fclose(edge_rare);
         my_edge_crashes+=1;
       } else if(ifnew){
-        fn = alloc_printf("%s-path/_crashes/id:%08llu_%d", out_dir, my_path_crashes, filter_index);  
+        fn = alloc_printf("/out/path/_crashes/id-%08llu", my_path_crashes);  
         FILE *path_rare = fopen(rareness_log_path, "a+");
         flock(fileno(path_rare), LOCK_EX);
-        fprintf(path_rare, "%.8f,id:%08u_%d,pc\n", rareness, my_path_crashes, filter_index);
+        fprintf(path_rare, "%.8f,id-%08u,pc\n", rareness, my_path_crashes);
         flock(fileno(path_rare), LOCK_UN);
         fclose(path_rare);
         my_path_crashes+=1;
@@ -3686,7 +3688,7 @@ static void sync_fuzzers(char** argv) {
 
           syncing_party = sd_ent->d_name;
           
-          queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+          queued_imported += save_if_interesting(argv, mem, st.st_size, fault, path);
           syncing_party = 0;
 
           munmap(mem, st.st_size);
@@ -3694,7 +3696,7 @@ static void sync_fuzzers(char** argv) {
           if (!(stage_cur++ % stats_update_freq)) show_stats();
 
         }
-	unlink(path);
+				unlink(path);
         ck_free(path);
         close(fd);
 
