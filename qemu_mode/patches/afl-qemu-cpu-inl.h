@@ -60,10 +60,8 @@
 
 /* This is equivalent to afl-as.h: */
 
-static unsigned char *afl_area_ptr;//,
-                    //  *afl_area_ptr_n4,
-                    //  *afl_area_ptr_n8;
-
+static unsigned char *afl_area_ptr;
+//FILE *fptr = fopen("./debug.log", "a+");
 
 /* Exported variables populated by the code patched into elfload.c: */
 
@@ -134,9 +132,6 @@ static void afl_setup(void) {
 
     shm_id = atoi(id_str);
     afl_area_ptr = shmat(shm_id, NULL, 0);
-    // afl_area_ptr_n4 = afl_area_ptr + MAP_SIZE + 8;
-    // afl_area_ptr_n8 = afl_area_ptr_n4 + MAP_SIZE + 8;
-
 
     if (afl_area_ptr == (void*)-1) exit(1);
 
@@ -235,72 +230,14 @@ inline uint32_t bitmap_hash(acc)
 #define N_GRAM (1 << N_GRAM_POW2)
 
 /* The equivalent of the tuple logging routine from afl-as.h. */
-
-// void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) { 
-//   /*
-//     J.H.:
-//       calculate and update three consecutive bitmap, each representing one level of uniqueness
-//   */
-//   static abi_ulong n_elem[N_GRAM];
-//   if (((cur_loc > afl_end_code || cur_loc < afl_start_code) && (next_pc > afl_end_code || next_pc < afl_start_code)) || !afl_area_ptr)
-//     return;
-  
-//   // uint64_t *new_n2_num = (uint64_t *)(afl_area_ptr + MAP_SIZE);
-//   // uint64_t *new_n4_num = (uint64_t *)(afl_area_ptr_n4 + MAP_SIZE);
-//   // uint64_t *new_n8_num = (uint64_t *)(afl_area_ptr_n8 + MAP_SIZE);
-
-//   int i;
-//   abi_ulong acc, tmp;
-
-//   cur_loc &= (MAP_SIZE - 1);
-//   next_pc &= (MAP_SIZE - 1);
-
-//   // shift n_gram window now;
-//   for(i = N_GRAM - 1; i > 0; i--) {
-//     n_elem[i] = n_elem[i-1];
-//   }
-//   n_elem[0] = (cur_loc >> 1) ^ next_pc; // edge as unit of each N-gram
-//   acc = n_elem[0];
-  
-//   // calculate n-gram at 3 level and update new_nx_num along the way
-//   for(i = 1; i < N_GRAM; i++) {
-//     acc = acc * 7 + n_elem[i];
-    
-//     if(i == 1) {  // update n2 level hash map
-//       tmp = acc & (MAP_SIZE - 1);
-//       afl_area_ptr[tmp] += 1;
-//       // if(!afl_area_ptr[tmp]) {
-//       //   new_n2_num[0] += 1;
-//       //   afl_area_ptr[tmp] = 1;
-//       // }
-//     }
-//     // if(i == 3) {
-//     //   tmp = acc & (MAP_SIZE - 1);
-//     //   //afl_area_ptr_n4[tmp] += 1;
-//     //   if(!afl_area_ptr_n4[tmp]) {
-//     //     new_n4_num[0] += 1;
-//     //     afl_area_ptr_n4[tmp] = 1;
-//     //   }
-//     // }
-//     // if(i == 7) {
-//     //   tmp = acc & (MAP_SIZE - 1);
-//     //   //afl_area_ptr_n8[tmp] += 1;
-//     //   if(!afl_area_ptr_n8[tmp]) {
-//     //     new_n8_num[0] += 1;
-//     //     afl_area_ptr_n8[tmp] = 1;
-//     //   }
-//     // }
-//   }
+// void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
+//   return;
+//     // fprintf(fptr, "next_pc=0x%x, cur_loc=0x%x\n", next_pc, cur_loc);
+//     // fflush(fptr);
 // }
 
-void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) { 
-  
-  /*J.H.:
-      1. whole path hash stored in the extended uint64_t space
-      2. the edge hit count stored in the bitmap still. Now i changed it into N2 gram. 
-  */
+void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
 
-  // static abi_ulong prev_loc;
   static abi_ulong n_pair[N_GRAM];
   /* Optimize for cur_loc > afl_end_code, which is the most likely case on
      Linux systems. */
@@ -308,14 +245,14 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   if (((cur_loc > afl_end_code || cur_loc < afl_start_code) && (next_pc > afl_end_code || next_pc < afl_start_code)) || !afl_area_ptr)
     return;
 
-
   uint64_t* afl_trace_p = (uint64_t*)(afl_area_ptr + MAP_SIZE);
   afl_trace_p[0] *= 7;
   afl_trace_p[0] += cur_loc;
-
-  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/qemu.log", "a+");
-  // fprintf(fptr, "[QEMU]: cur_loc: %lu, afl_trace_p[0]: %lu\n", cur_loc,  afl_trace_p[0]);
-  // fclose(fptr);
+  afl_trace_p[0] *= 7;
+  afl_trace_p[0] += next_pc;  
+  // FILE *fptr = fopen("./debug.log", "a+");
+  // fprintf(fptr, "next_pc=0x%x, cur_loc=0x%x\n", next_pc, cur_loc);
+  // fflush(fptr);
 
   /* Looks like QEMU always maps to fixed locations, so we can skip this:
      cur_loc -= afl_start_code; */
@@ -324,10 +261,10 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
      something quasi-uniform. */
 
 
-  // cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
+  cur_loc  = (cur_loc >> 4) ^ (cur_loc << 8);
   cur_loc &= MAP_SIZE - 1;
 
-  // next_pc = (next_pc >> 4) ^ (next_pc << 8);
+  next_pc = (next_pc >> 4) ^ (next_pc << 8);
   next_pc &= MAP_SIZE - 1;
 
 
@@ -337,7 +274,6 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
   if (cur_loc >= afl_inst_rms || next_pc >= afl_inst_rms) return;
 
   abi_ulong cur = (cur_loc >> 1) ^ next_pc;
-
   abi_ulong acc = cur;
   
   // fprintf(stderr, "cur_loc: %d\n", cur_loc);
@@ -350,18 +286,17 @@ void afl_maybe_log(abi_ulong next_pc, abi_ulong cur_loc) {
     n_pair[i] = n_pair[i+1];
   }
 
-  
+  acc &= MAP_SIZE - 1;
   // fprintf(stderr, "acc: %d\n", acc);
   if(afl_area_ptr && afl_area_ptr[acc] < 255)
   {
     afl_area_ptr[acc] ++;
-    // fprintf(fptr, "[QEMU]: hit in bitmap, loc: %d, hit: %d\n", acc, afl_area_ptr[acc]);
   }
 
   n_pair[N_GRAM-1] = cur;
   // afl_area_ptr[cur_loc ^ prev_loc]++;
   // prev_loc = cur_loc >> 1;
-  // fclose(fptr);
+
 }
 
 

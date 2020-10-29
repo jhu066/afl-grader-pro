@@ -5526,8 +5526,6 @@ static target_timer_t get_timer_id(abi_long arg)
     return timerid;
 }
 
-static int empty_read_cnts = 0;
-
 /* do_syscall() should always have a single exit point at the end so
    that actions, such as logging of syscall results, can be performed.
    All errnos that do_syscall() returns must be -TARGET_<errcode>. */
@@ -5588,13 +5586,6 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
             if (!(p = lock_user(VERIFY_WRITE, arg2, arg3, 0)))
                 goto efault;
             ret = get_errno(read(arg1, p, arg3));
-            if(ret == 0)
-            {
-              empty_read_cnts++;
-              if(empty_read_cnts >3)
-                goto _terminate;
-            }
-
             unlock_user(p, arg2, ret);
         }
         break;
@@ -7445,7 +7436,7 @@ abi_long do_syscall(void *cpu_env, int num, abi_long arg1,
 #ifdef TARGET_GPROF
         _mcleanup();
 #endif
-_terminate:
+// _terminate:
         // gemu_log("============================================== exit_group ===================================================\n\n");
         gdb_exit(cpu_env, arg1);
         ret = get_errno(exit_group(arg1));

@@ -72,15 +72,18 @@
 int sync_times = 0;
 int sync_count = 0;
 int sync_count_crashes = 0;
+float rareness;
 
 int sync_max_seeds_per = 20;
 
 
-
+static int filter_index;
 static u8 //*in_dir,                    /* Input directory with test cases  */
           *out_file,                  /* File to fuzz, if any             */
           *out_dir,                   /* Working & output directory       */
-          *coverage_dir,              /* coverage pending queue */
+          //*filter_index, 
+          *rareness_log_edge,
+          *rareness_log_path,
           // *local_out_dir,
           // *remote_out_dir,
           *sync_dir,                  /* Synchronization directory        */
@@ -136,17 +139,9 @@ static s32 forksrv_pid,               /* PID of the fork server           */
 static u8 is_qemu_log = 0;
 static u8 is_trim_case = 0;
 
-static u8* trace_bits;                /* SHM with instrumentation bitmap - now serve for N2/4/8 coverage */
-// static u8* trace_bits_N4;             /* serve for N4 coverage */
-// static u8* trace_bits_N8;             /* serve for N8 coverage */
+static u8* trace_bits;                /* SHM with instrumentation bitmap  */
 
-// static uint64_t *new_n2_num,
-//                 *new_n4_num,
-//                 *new_n8_num;
-
-static int overall_bits[MAP_SIZE * 2];     /* 2 global bitmap, one for global max-hit, the other for accumulative hitcount  */
-static int *accu_bits;
-
+static short overall_bits[MAP_SIZE];
 static u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_hang[MAP_SIZE],     /* Bits we haven't seen in hangs    */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
@@ -157,7 +152,11 @@ static volatile u8 stop_soon,         /* Ctrl-C pressed?                  */
                    clear_screen = 1,  /* Window resized?                  */
                    child_timed_out;   /* Traced process timed out?        */
 
-static u32 queued_paths,              /* Total number of queued testcases */
+static u32 my_edges,
+           my_paths,
+           my_edge_crashes,
+           my_path_crashes,
+           queued_paths,              /* Total number of queued testcases */
            queued_variable,           /* Testcases with variable behavior */
            //queued_at_start,           /* Total number of initial inputs   */
            queued_discovered,         /* Items discovered during this run */
@@ -1251,9 +1250,8 @@ static void setup_shm(void) {
 
   memset(virgin_hang, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
-  memset(overall_bits, 0, 2 * MAP_SIZE * sizeof(int));
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 8, IPC_CREAT | IPC_EXCL | 0600); //J.H. only one map is enough 
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + 8, IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1271,29 +1269,18 @@ static void setup_shm(void) {
 
   ck_free(shm_str);
 
-  trace_bits = shmat(shm_id, NULL, 0);  
-  if (!trace_bits) PFATAL("trace_bits shmat() failed");
-
-  // new_n2_num = (uint64_t *)(trace_bits + MAP_SIZE);
-  // new_n4_num = (uint64_t *)(trace_bits + 2 * MAP_SIZE + 8);
-  // new_n8_num = (uint64_t *)(trace_bits + 3 * MAP_SIZE + 16);
-  // trace_bits_N4 = (u8 *)(trace_bits + MAP_SIZE + 8);
-  // trace_bits_N8 = (u8 *)(trace_bits_N4 + MAP_SIZE + 8);
-  accu_bits = overall_bits + MAP_SIZE;
-  // overall_bits = shmat(shm_id, NULL, 0);
-  // if (!overall_bits) PFATAL("overall_bits shmat() failed");
-
+  trace_bits = shmat(shm_id, NULL, 0);
+  
+  if (!trace_bits) PFATAL("shmat() failed");
 
     ACTF("shm_id: %i", (int)shm_id);
 #ifdef __x86_64__
     ACTF("trace_bits@ 0x%016lx", (unsigned long)trace_bits);
-    ACTF("overall_bits@ 0x%016lx", (unsigned long)overall_bits);
     ACTF("virgin_bits@ 0x%016lx", (unsigned long)virgin_bits);
     ACTF("virgin_hang@ 0x%016lx", (unsigned long)virgin_hang);
     ACTF("virgin_crash@ 0x%016lx", (unsigned long)virgin_crash);
 #else
     ACTF("trace_bits@ 0x%08x", (unsigned int)trace_bits);
-    ACTF("overall_bits@ 0x%08x", (unsigned int)overall_bits);
     ACTF("virgin_bits@ 0x%08x", (unsigned int)virgin_bits);
     ACTF("virgin_hang@ 0x%08x", (unsigned int)virgin_hang);
     ACTF("virgin_crash@ 0x%08x", (unsigned int)virgin_crash);
@@ -1606,6 +1593,20 @@ static void init_forkserver(char** argv) {
 
 }
 
+float get_rare(u8* trace_map) {
+  int i;
+  float score = 0;
+  for (i = 0; i < MAP_SIZE; i++) {
+    if(overall_bits[i] >= 1024) {
+      continue; // optimization for frequently visited edge. 
+    }
+    else if (trace_map[i] > 0) { 
+      overall_bits[i] = trace_map[i] + overall_bits[i];
+      score += (1.0 * trace_map[i] / overall_bits[i]);
+    }
+  }
+  return score;
+}
 /* Execute target application, monitoring for timeouts. Return status
    information. The called program will update trace_bits[]. */
 
@@ -1622,10 +1623,7 @@ static u8 run_target(char** argv) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  memset(trace_bits, 0, MAP_SIZE+8); // J.H. refresh the bitmap for new seed coming 
-  // new_n2_num[0] = 0;
-  // new_n4_num[0] = 0;
-  // new_n8_num[0] = 0;
+  memset(trace_bits, 0, MAP_SIZE + 8);
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -1745,9 +1743,10 @@ static u8 run_target(char** argv) {
   } else {
 
     s32 res;
-
-    if ((res = read(fsrv_st_fd, &status, 4)) != 4) {
-
+    res = read(fsrv_st_fd, &status, 4);
+    
+    if (res != 4) {
+      
       if (stop_soon) return 0;
       RPFATAL(res, "Unable to communicate with fork server");
 
@@ -1772,11 +1771,15 @@ static u8 run_target(char** argv) {
 
   tb4 = *(u32*)trace_bits;
 
-// #ifdef __x86_64__
-//   classify_counts((u64*)trace_bits);
-// #else
-//   classify_counts((u32*)trace_bits);
-// #endif /* ^__x86_64__ */
+  // need to get rareness score here! 
+  rareness = get_rare(trace_bits); // before classify counts! 
+  //rareness = 0.0;
+
+#ifdef __x86_64__
+  classify_counts((u64*)trace_bits);
+#else
+  classify_counts((u32*)trace_bits);
+#endif /* ^__x86_64__ */
   
   /* Report outcome to caller. */
 
@@ -1807,7 +1810,7 @@ static u8 run_target(char** argv) {
    is unlinked and a new one is created. Otherwise, out_fd is rewound and
    truncated. */
 
-static void write_to_testcase(void* mem, u32 len) { //J.H. why need modified data to file for testing though?
+static void write_to_testcase(void* mem, u32 len) {
 
   s32 fd = out_fd;
 
@@ -2076,122 +2079,121 @@ static void show_stats(void);
    to warn about flaky or otherwise problematic test cases early on; and when
    new paths are discovered to detect variable behavior and so on. */
 
-// static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
-//                          u32 handicap, u8 from_queue) {
+static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
+                         u32 handicap, u8 from_queue) {
 
+  u8  fault = 0, new_bits = 0, var_detected = 0, first_run = (q->exec_cksum == 0);
+  u64 start_us, stop_us;
 
-//   u8  fault = 0, new_bits = 0, var_detected = 0, first_run = (q->exec_cksum == 0);
-//   u64 start_us, stop_us;
+  s32 old_sc = stage_cur, old_sm = stage_max, old_tmout = exec_tmout;
+  u8* old_sn = stage_name;
 
-//   s32 old_sc = stage_cur, old_sm = stage_max, old_tmout = exec_tmout;
-//   u8* old_sn = stage_name;
+  /* Be a bit more generous about timeouts when resuming sessions, or when
+     trying to calibrate already-added finds. This helps avoid trouble due
+     to intermittent latency. */
 
-//   /* Be a bit more generous about timeouts when resuming sessions, or when
-//      trying to calibrate already-added finds. This helps avoid trouble due
-//      to intermittent latency. */
+  if (!from_queue || resuming_fuzz)
+    exec_tmout = MAX(exec_tmout + CAL_TMOUT_ADD,
+                     exec_tmout * CAL_TMOUT_PERC / 100);
 
-//   if (!from_queue || resuming_fuzz)
-//     exec_tmout = MAX(exec_tmout + CAL_TMOUT_ADD,
-//                      exec_tmout * CAL_TMOUT_PERC / 100);
+  q->cal_failed++;
 
-//   q->cal_failed++;
+  stage_name = "calibration";
+  stage_max  = no_var_check ? CAL_CYCLES_NO_VAR : CAL_CYCLES;
 
-//   stage_name = "calibration";
-//   stage_max  = no_var_check ? CAL_CYCLES_NO_VAR : CAL_CYCLES;
+  /* Make sure the forkserver is up before we do anything, and let's not
+     count its spin-up time toward binary calibration. */
 
-//   /* Make sure the forkserver is up before we do anything, and let's not
-//      count its spin-up time toward binary calibration. */
+  if (!dumb_mode && !no_forkserver && !forksrv_pid)
+    init_forkserver(argv);
+  // while(1);
+  start_us = get_cur_time_us();
+  // ACTF("stage_max: %d", stage_max);
 
-//   if (!dumb_mode && !no_forkserver && !forksrv_pid)
-//     init_forkserver(argv);
-//   // while(1);
-//   start_us = get_cur_time_us();
-//   // ACTF("stage_max: %d", stage_max);
+  for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
 
-//   for (stage_cur = 0; stage_cur < stage_max; stage_cur++) {
+    u32 cksum;
 
-//     u32 cksum;
+    if (!first_run && !(stage_cur % stats_update_freq)) show_stats();
 
-//     if (!first_run && !(stage_cur % stats_update_freq)) show_stats();
-
-//     write_to_testcase(use_mem, q->len);
-//     // ACTF("run_target() 1 at staget_cur: %d", stage_cur);
-//     fault = run_target(argv);
+    write_to_testcase(use_mem, q->len);
+    // ACTF("run_target() 1 at staget_cur: %d", stage_cur);
+    fault = run_target(argv);
     
-//     /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
-//        we want to bail out quickly. */
+    /* stop_soon is set by the handler for Ctrl+C. When it's pressed,
+       we want to bail out quickly. */
 
-//     if (stop_soon || fault != crash_mode) goto abort_calibration;
+    if (stop_soon || fault != crash_mode) goto abort_calibration;
 
-//     if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
-//       fault = FAULT_NOINST;
-//       goto abort_calibration;
-//     }
+    if (!dumb_mode && !stage_cur && !count_bytes(trace_bits)) {
+      fault = FAULT_NOINST;
+      goto abort_calibration;
+    }
 
-//     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-//     // ACTF("cksum: %u @%d", cksum, stage_cur);
-//     if (q->exec_cksum != cksum) {
+    cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+    // ACTF("cksum: %u @%d", cksum, stage_cur);
+    if (q->exec_cksum != cksum) {
 
-//       u8 hnb = has_new_bits(virgin_bits);
-//       if (hnb > new_bits) new_bits = hnb;
+      u8 hnb = has_new_bits(virgin_bits);
+      if (hnb > new_bits) new_bits = hnb;
 
-//       if (!no_var_check && q->exec_cksum) {
+      if (!no_var_check && q->exec_cksum) {
 
-//         var_detected = 1;
-//         stage_max    = CAL_CYCLES_LONG;
+        var_detected = 1;
+        stage_max    = CAL_CYCLES_LONG;
 
-//       } else q->exec_cksum = cksum;
+      } else q->exec_cksum = cksum;
 
-//     }
+    }
 
-//   }
+  }
   
-//   stop_us = get_cur_time_us();
+  stop_us = get_cur_time_us();
 
-//   total_cal_us     += stop_us - start_us;
-//   total_cal_cycles += stage_max;
+  total_cal_us     += stop_us - start_us;
+  total_cal_cycles += stage_max;
 
-//   /* OK, let's collect some stats about the performance of this test case.
-//      This is used for fuzzing air time calculations in calculate_score(). */
+  /* OK, let's collect some stats about the performance of this test case.
+     This is used for fuzzing air time calculations in calculate_score(). */
 
-//   q->exec_us     = (stop_us - start_us) / stage_max;
-//   q->bitmap_size = count_bytes(trace_bits);
-//   q->handicap    = handicap;
-//   q->cal_failed  = 0;
+  q->exec_us     = (stop_us - start_us) / stage_max;
+  q->bitmap_size = count_bytes(trace_bits);
+  q->handicap    = handicap;
+  q->cal_failed  = 0;
 
-//   total_bitmap_size += q->bitmap_size;
-//   total_bitmap_entries++;
-//   update_bitmap_score(q);
+  total_bitmap_size += q->bitmap_size;
+  total_bitmap_entries++;
+  update_bitmap_score(q);
 
-//   /* If this case didn't result in new output from the instrumentation, tell
-//      parent. This is a non-critical problem, but something to warn the user
-//      about. */
+  /* If this case didn't result in new output from the instrumentation, tell
+     parent. This is a non-critical problem, but something to warn the user
+     about. */
   
-//   if (!dumb_mode && first_run && !fault && !new_bits) fault = FAULT_NOBITS;
+  if (!dumb_mode && first_run && !fault && !new_bits) fault = FAULT_NOBITS;
 
-// abort_calibration:
+abort_calibration:
 
-//   if (new_bits == 2 && !q->has_new_cov) {
-//     q->has_new_cov = 1;
-//     queued_with_cov++;
-//   }
+  if (new_bits == 2 && !q->has_new_cov) {
+    q->has_new_cov = 1;
+    queued_with_cov++;
+  }
 
-//   /* Mark variable paths. */
+  /* Mark variable paths. */
 
-//   if (var_detected && !q->var_behavior) {
-//     mark_as_variable(q);
-//     queued_variable++;
-//   }
+  if (var_detected && !q->var_behavior) {
+    mark_as_variable(q);
+    queued_variable++;
+  }
 
-//   stage_name = old_sn;
-//   stage_cur  = old_sc;
-//   stage_max  = old_sm;
-//   exec_tmout = old_tmout;
-//   if (!first_run) show_stats();
+  stage_name = old_sn;
+  stage_cur  = old_sc;
+  stage_max  = old_sm;
+  exec_tmout = old_tmout;
+  if (!first_run) show_stats();
 
-//   return fault;
+  return fault;
 
-// }
+}
 
 
 
@@ -2297,178 +2299,18 @@ static void write_crash_readme(void) {
 }
 
 
-/* check if the execution triggers unique path (identified by unique path hash value) => queue folder
-                       or triggers unique crashes (trigger crash and unique path hash) => crash folder*/
-static u8 save_if_interesting_JH(char** argv, void* mem, u32 len, u8 fault,  u8* path, int level) {
-  u8 *fn = "";
-  u8 *tmp = "";
-  u8  hnb;
-  int ifnew;
-  s32 fd;
-  u8  keeping = 0, res;
-  int seedlevel = 0;
-
-  if(hnb = has_new_bits(virgin_bits)) {
-    seedlevel = 2;      // edge seed! 
-  }
-  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE); 
-
-  khiter_t k;
-  int ret;
-  u32 key_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
-  k = kh_get(32, cksum2paths, key_cksum);
-  if (k == kh_end(cksum2paths)){
-      k = kh_put(32, cksum2paths, key_cksum, &ret);
-      kh_value(cksum2paths, k) = 1;
-  }
-  //if (k != kh_end(cksum2paths)){
-  else {
-    ++kh_value(cksum2paths, k);
-  } 
-
-  kh_put(p64, hash_value_set, afl_trace_p[0], &ifnew);  
-  
-  // for debug log 
-  FILE *fptr = fopen("/home/cju/sp2021/e2e_sche/grader.log", "a+");
-  fprintf(fptr, "[afl-grader]: %lu - uniq=%d, edgecov: %d\n", afl_trace_p[0], ifnew, seedlevel);
-  fprintf(fptr, "[afl-grader]: %s\n", path);
-  fclose(fptr);
-  // for debug log 
-  if(seedlevel != 2 && !ifnew) {
-    return 0;
-  }
-
-  if (fault == crash_mode) { // basically always gonna keep the testcase and mark it with rareness score. 
-
-    if(seedlevel == 2) {
-      fn = alloc_printf("%s/queue/id:%06u", out_dir, queued_paths);
-      tmp = alloc_printf("%s/queue/tmp", out_dir);
-    } else if(ifnew) {
-      fn = alloc_printf("%s-path/_queue/id:%06u", out_dir, queued_paths);
-      tmp = alloc_printf("%s-path/_queue/tmp", out_dir);
-    } else {
-      return 0; // no need to keep this seed, no edge or path hit! 
-    }
-    
-
-    // if (is_trim_case && (len <= 10*1024)) {
-    //   len = minimize_case(argv, mem, len, key_cksum, fn);
-    // }
-    // extra_blocks(queued_paths, 0);
-    add_to_queue(fn, len, 0);
-
-    //if(ifnew) {
-    if(seedlevel == 2) {
-      queue_top->has_new_cov = 1;
-      queued_with_cov++;
-    }
-    queue_top->exec_cksum = key_cksum;  
-    // res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
-
-    // if (res == FAULT_ERROR)
-    //   FATAL("Unable to execute target application");
-
-    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) PFATAL("Unable to create '%s'", tmp);
-    ck_write(fd, mem, len, tmp);
-    close(fd);
-
-    rename(tmp, fn);
-
-    keeping = 1; // set keeping to 1 because it is unique path  
-  }
-
-  switch(fault) {
-    case FAULT_HANG:
-      /* Hangs are not very interesting, but we're still obliged to keep
-         a handful of samples. We use the presence of new bits in the
-         hang-specific bitmap as a signal of uniqueness. In "dumb" mode, we
-         just keep everything. */
-      total_hangs++;
-
-      // if (unique_hangs >= KEEP_UNIQUE_HANG) return keeping;
-#ifndef SIMPLE_FILES
-      fn = alloc_printf("%s/hangs/id:%06llu,%s", out_dir,
-                        unique_hangs, describe_op(0));
-#else
-      fn = alloc_printf("%s/hangs/id_%06llu", out_dir,
-                        unique_hangs);
-#endif /* ^!SIMPLE_FILES */
-      unique_hangs++;
-
-      last_hang_time = get_cur_time();
-
-      break;
-    case FAULT_CRASH:
-      /* This is handled in a manner roughly similar to hangs,
-         except for slightly different limits. */
-      total_crashes++;
-
-      // if (unique_crashes >= KEEP_UNIQUE_CRASH) return keeping;
-
-      if (!unique_crashes) write_crash_readme();
-
-// #ifndef SIMPLE_FILES
-//       fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
-//                         unique_crashes, kill_signal, describe_op(0));
-// #else
-//       fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
-//                         kill_signal);
-// #endif /* ^!SIMPLE_FILES */
-      if(seedlevel == 2) {
-        fn = alloc_printf("%s/crashes/id:%06llu", out_dir, unique_crashes);
-      }
-      else if(ifnew) {
-        fn = alloc_printf("%s-path/_crashes/id:%06llu", out_dir, unique_crashes);
-      }
-      else {
-        return 0;
-      }
-      
-      if(unique_crashes == 0)
-      {
-        first_crash_time = get_cur_time();
-      }
-
-      // extra_blocks(unique_crashes, 1);
-
-      unique_crashes++;
-
-      last_crash_time = get_cur_time();
-
-      break;
-
-    case FAULT_ERROR: FATAL("Unable to execute target application");
-
-    default: return keeping;
-
-  }
-  /* If we're here, we apparently want to save the crash or hang
-     test case, too. */
-  fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
-  if (fd < 0) PFATAL("Unable to create '%s'", fn);
-  ck_write(fd, mem, len, fn);
-  close(fd);
-
-  ck_free(fn);
-  return keeping;
-}
-
 /* Check if the result of an execve() during routine fuzzing is interesting,
    save or queue the input test case for further analysis if so. Returns 1 if
    entry is saved, 0 otherwise. */
-static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* path) {
+
+static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
   u8  *fn = "";
-  u8  hnb;
+  u8  *tmp = "";
+  u8  hnb = 0;
   s32 fd;
   u8  keeping = 0, res;
-
-  // J.H. reading the whole path hash value, testing code
-  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE);
-  // FILE *fptr = fopen("/home/jie/projects/hybrid-root/path-hash/debug.log", "a+");
-  // fprintf(fptr, "[afl-fuzz]: %s - %lu\n", path, afl_trace_p[0]);
-  // fclose(fptr);
+  int ifnew;
 
   //Update path freq. No change to semantics
   khiter_t k;
@@ -2477,29 +2319,54 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* pa
   if (k != kh_end(cksum2paths)){
     ++kh_value(cksum2paths, k);
   }
+  
+  hnb = has_new_bits(virgin_bits);
+  uint64_t* afl_trace_p = (uint64_t*)(trace_bits + MAP_SIZE); 
+  kh_put(p64, hash_value_set, afl_trace_p[0], &ifnew);  
 
-  if (fault == crash_mode) {
+  if (fault == crash_mode && !crash_mode) {
+
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
-    if (!(hnb = has_new_bits(virgin_bits))) {
-      if (crash_mode) total_crashes++;
-      return 0;
-    }    
-#ifndef SIMPLE_FILES
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
-#else
-    fn = alloc_printf("%s/queue/id_%06u", out_dir, queued_paths);
-#endif /* ^!SIMPLE_FILES */
-    if (is_trim_case && (len <= 10*1024))
-    {
-      len = minimize_case(argv, mem, len, key_cksum, fn);
-    }
+    
 
-    extra_blocks(queued_paths, 0);
+// #ifndef SIMPLE_FILES
+    if(hnb) { // edge queue
+      fn = alloc_printf("%s/queue/id:%08u_%d", out_dir, my_edges, filter_index);
+      FILE *edge_rare = fopen(rareness_log_edge, "a+");
+      //flock(fileno(edge_rare), LOCK_EX);
+      fprintf(edge_rare, "%.8f,id:%08u_%d,eq\n", rareness, my_edges, filter_index);
+      //flock(fileno(edge_rare), LOCK_UN);
+      fclose(edge_rare);
+      my_edges += 1;
+    } else if(ifnew) {    // path queue      
+      fn = alloc_printf("%s-path/_queue/id:%08u_%d", out_dir, my_paths, filter_index);
+      FILE *path_rare = fopen(rareness_log_path, "a+");
+      //flock(fileno(path_rare), LOCK_EX);
+      fprintf(path_rare, "%.8f,id:%08u_%d,pq\n", rareness, my_paths, filter_index);
+      //flock(fileno(path_rare), LOCK_UN);
+      fclose(path_rare);
+      my_paths += 1;
+    } else {
+      return 0;
+    }
+    
+
+// #else
+
+//     fn = alloc_printf("%s/queue/id_%08u", out_dir, queued_paths);
+
+// #endif /* ^!SIMPLE_FILES */
+
+    // if (is_trim_case && (len <= 10*1024))
+    // {
+    //   len = minimize_case(argv, mem, len, key_cksum, fn);
+    // }
+
+    // extra_blocks(queued_paths, 0);
     add_to_queue(fn, len, 0);
 
-    if (hnb == 2) {
+    if (hnb/* == 2*/) {
       queue_top->has_new_cov = 1;
       queued_with_cov++;
     }
@@ -2514,18 +2381,18 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* pa
        successful. */
 
     // ACTF("calibrating");
-    res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
+    //res = calibrate_case(argv, queue_top, mem, queue_cycle - 1, 0);
 
-    if (res == FAULT_ERROR)
-      FATAL("Unable to execute target application");
-
+    // if (res == FAULT_ERROR)
+    //   FATAL("Unable to execute target application");
+    //tmp = alloc_printf("%s/tmp", out_dir);
     fd = open(fn, O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) PFATAL("Unable to create '%s'", fn);
     ck_write(fd, mem, len, fn);
     close(fd);
 
+    //rename(tmp, fn);
     keeping = 1;
-
   }
 
   switch (fault) {
@@ -2539,7 +2406,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* pa
 
       total_hangs++;
 
-      if (unique_hangs >= KEEP_UNIQUE_HANG) return keeping;
+      //if (unique_hangs >= KEEP_UNIQUE_HANG) return keeping;
 
       if (!dumb_mode) {
 
@@ -2555,12 +2422,12 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* pa
 
 #ifndef SIMPLE_FILES
 
-      fn = alloc_printf("%s/hangs/id:%06llu,%s", out_dir,
+      fn = alloc_printf("%s/hangs/id:%08llu,%s", out_dir,
                         unique_hangs, describe_op(0));
 
 #else
 
-      fn = alloc_printf("%s/hangs/id_%06llu", out_dir,
+      fn = alloc_printf("%s/hangs/id_%08llu", out_dir,
                         unique_hangs);
 
 #endif /* ^!SIMPLE_FILES */
@@ -2578,42 +2445,56 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault,  u8* pa
 
       total_crashes++;
 
-      if (unique_crashes >= KEEP_UNIQUE_CRASH) return keeping;
+      //if (unique_crashes >= KEEP_UNIQUE_CRASH) return keeping;
 
-      if (!dumb_mode) {
+//       if (!dumb_mode) {
 
-#ifdef __x86_64__
-        simplify_trace((u64*)trace_bits);
-#else
-        simplify_trace((u32*)trace_bits);
-#endif /* ^__x86_64__ */
+// #ifdef __x86_64__
+//         simplify_trace((u64*)trace_bits);
+// #else
+//         simplify_trace((u32*)trace_bits);
+// #endif /* ^__x86_64__ */
 
-        if (!has_new_bits(virgin_crash)) return keeping;
+//         //if (!has_new_bits(virgin_crash)) return keeping;
 
-      }
+//       }
 
       if (!unique_crashes) write_crash_readme();
 
+// #ifndef SIMPLE_FILES
+      if(hnb) {
+        fn = alloc_printf("%s/crashes/id:%08llu_%d", out_dir, my_edge_crashes, filter_index);
+        FILE *edge_rare = fopen(rareness_log_edge, "a+");
+        flock(fileno(edge_rare), LOCK_EX);
+        fprintf(edge_rare, "%.8f,id:%08u_%d,ec\n", rareness, my_edge_crashes, filter_index);
+        flock(fileno(edge_rare), LOCK_UN);
+        fclose(edge_rare);
+        my_edge_crashes+=1;
+      } else if(ifnew){
+        fn = alloc_printf("%s-path/_crashes/id:%08llu_%d", out_dir, my_path_crashes, filter_index);  
+        FILE *path_rare = fopen(rareness_log_path, "a+");
+        flock(fileno(path_rare), LOCK_EX);
+        fprintf(path_rare, "%.8f,id:%08u_%d,pc\n", rareness, my_path_crashes, filter_index);
+        flock(fileno(path_rare), LOCK_UN);
+        fclose(path_rare);
+        my_path_crashes+=1;
+      } else {
+        return 0;
+      }
 
+// #else
 
-#ifndef SIMPLE_FILES
+//       fn = alloc_printf("%s/crashes/id_%08llu_%02u", out_dir, unique_crashes,
+//                         kill_signal);
 
-      fn = alloc_printf("%s-crashes/queue/id:%06llu,sig:%02u,%s", out_dir,
-                        unique_crashes, kill_signal, describe_op(0));
-
-#else
-
-      fn = alloc_printf("%s-crashes/queue/id_%06llu_%02u", out_dir, unique_crashes,
-                        kill_signal);
-
-#endif /* ^!SIMPLE_FILES */
+// #endif /* ^!SIMPLE_FILES */
 
       if(unique_crashes == 0)
       {
         first_crash_time = get_cur_time();
       }
 
-      extra_blocks(unique_crashes, 1);
+      //extra_blocks(unique_crashes, 1);
 
       unique_crashes++;
 
@@ -2906,7 +2787,7 @@ static void maybe_delete_out_dir(void) {
 
   }
 
-  close(out_dir_fd);
+  close(out_dir_fd); // j.h.
 
   f = fopen(fn, "r");
 
@@ -3126,7 +3007,6 @@ static void show_stats(void) {
 
   u64 cur_ms;
   u32 t_bytes, t_bits;
-
 
   u32 banner_len, banner_pad;
   u8  tmp[256];
@@ -3683,7 +3563,7 @@ static void sync_fuzzers(char** argv) {
   cur_depth = 0;
 
   /* Look at the entries created for every other fuzzer in the sync directory. */
-  // J.H.: here make syncing process follow the order of N2/N4/N8! 
+
   while ((sd_ent = readdir(sd))) {
 
     int num_checked_seeds = 0;
@@ -3693,7 +3573,6 @@ static void sync_fuzzers(char** argv) {
     // DIR* qd;
     struct dirent* qd_ent;
     u8 *qd_path, *qd_synced_path;
-    u8 *deletetscs;
     u32 min_accept = 0, next_min_accept;
 
     s32 id_fd;
@@ -3704,19 +3583,12 @@ static void sync_fuzzers(char** argv) {
 
     /* Skip anything that doesn't have a queue/ subdirectory. */
     // ACTF("target_sync_dir: %s", sd_ent->d_name);
-
-    // here check if the current syncing directory is N2/N4/N8
-    //int del; // for path-prefix, will be 9, for n-gram: 2,4,8
-    // if (sscanf(sd_ent->d_name, "Kirenenko-N%d", &level) != 1) {
-    //   PFATAL("Invalid Kirenenko-NX directory!\n");
-    // }
-    // if(!strcmp(sd_ent->d_name, "Kirenenko-novel")) del = 1;  // means ce seeds
-    // if(!strcmp(sd_ent->d_name, "Kirenenko-fuzz")) del = 0;   // means fuzz seeds
+    sscanf(sd_ent->d_name, "kirenenko-out-%d", &filter_index);
     
 
     int i;
     char* q_or_c[2] = {"queue", "crashes"};
-    for(i=0; i<1; i++) // here is when the iteration over queue directory happens. 
+    for(i=0; i<1; i++)
     {
       min_accept = 0;
       // qd_path = alloc_printf("%s/%s/queue", sync_dir, sd_ent->d_name);
@@ -3766,19 +3638,9 @@ static void sync_fuzzers(char** argv) {
         s32 fd;
         struct stat st;
 
-        if (qd_ent->d_name[0] == '.' || qd_ent->d_name[0] == 't') continue;
-
-        if (sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || syncing_case < min_accept) {
-            // move old ones below min_accept!
-            
-            if(syncing_case < min_accept) {
-              path = alloc_printf("%s/%s", qd_path, qd_ent->d_name);              
-              // deletetscs = alloc_printf("%s/%s", coverage_dir, qd_ent->d_name);
-              // rename(path, deletetscs);      
-              unlink(path);            
-              continue; // if the tscs has been executed before, skip it. 
-            }
-        }
+        if (qd_ent->d_name[0] == '.' ||
+            sscanf(qd_ent->d_name, CASE_PREFIX "%08u", &syncing_case) != 1 || 
+            syncing_case < min_accept) continue;
 
         // if(i == 0 && num_checked_seeds == sync_max_seeds_per)
         //   break;
@@ -3788,14 +3650,14 @@ static void sync_fuzzers(char** argv) {
         if (syncing_case >= next_min_accept)
           next_min_accept = syncing_case + 1;
 
-        path = alloc_printf("%s/%s", qd_path, qd_ent->d_name); // the new tscs's path! 
+        path = alloc_printf("%s/%s", qd_path, qd_ent->d_name);
 
         fd = open(path, O_RDONLY);
         if (fd < 0) PFATAL("Unable to open '%s'", path);
 
         if (fstat(fd, &st)) PFATAL("fstat() failed");
 
-        /* Ignore zero-sized or oversized files. */ // J.H.: maybe skip the unfinished file here as well! 
+        /* Ignore zero-sized or oversized files. */
 
         if (st.st_size && st.st_size <= MAX_FILE) {
 
@@ -3816,27 +3678,23 @@ static void sync_fuzzers(char** argv) {
           /* See what happens. We rely on save_if_interesting() to catch major
              errors and save the test case. */
 
-          // FILE *fptr = fopen("/home/jie/projects/covrare-exp-13/debug.log", "a+");
-          // fprintf(fptr, "[afl-fuzz]: %s - %d - %d\n", path, syncing_case, st.st_size);
-          // fclose(fptr);
-
-          write_to_testcase(mem, st.st_size); // so for some reason, firstly modify the file for testing, then execute...
-          //ACTF("run_target() 4");
-          fault = run_target(argv); // here the file is finally executed!
+          write_to_testcase(mem, st.st_size);
+          fault = run_target(argv); //
+          
 
           if (stop_soon) return;
-          // fprintf(fptr, "[afl-fuzz]: %s - %d - before\n", path, syncing_case);
+
           syncing_party = sd_ent->d_name;
-          queued_imported += save_if_interesting_JH(argv, mem, st.st_size, fault, path, 0); // if the file is interesting, where the validation of file happens! 
-          syncing_party = 0;
           
-          // fprintf(fptr, "[afl-fuzz]: %s - %d - after\n", path, syncing_case);
-          // fclose(fptr);
+          queued_imported += save_if_interesting(argv, mem, st.st_size, fault);
+          syncing_party = 0;
 
           munmap(mem, st.st_size);
 
           if (!(stage_cur++ % stats_update_freq)) show_stats();
+
         }
+	unlink(path);
         ck_free(path);
         close(fd);
 
@@ -3855,8 +3713,11 @@ static void sync_fuzzers(char** argv) {
       ck_free(qd_path);
       ck_free(qd_synced_path);
     }
+    
   }  
+
   closedir(sd);
+
 }
 
 
@@ -4187,6 +4048,20 @@ static void setup_dirs_fds(void) {
       FATAL("Resume attempted but old output directory not found");
 
   }
+  tmp = alloc_printf("%s-path", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp); 
+  ck_free(tmp);
+
+
+  tmp = alloc_printf("%s-path/_queue", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp); 
+  ck_free(tmp);
+
+  tmp = alloc_printf("%s-path/_crashes", out_dir);
+  if (mkdir(tmp, 0700)) PFATAL("Unable to create '%s'", tmp); 
+  ck_free(tmp);
+
+
 
   /* Queue directory for any starting & discovered paths. */
 
@@ -4808,7 +4683,7 @@ int main(int argc, char** argv) {
 
   
 
-  while ((opt = getopt(argc, argv, "+k:o:f:m:t:T:dnCB:S:M:QLs:r")) > 0)
+  while ((opt = getopt(argc, argv, "+o:f:m:t:T:dnCB:S:M:QLs:r")) > 0)
   {
     // ACTF("opt: %c", opt);
     switch (opt) {
@@ -4820,18 +4695,14 @@ int main(int argc, char** argv) {
 
       //   if (!strcmp(in_dir, "-")) in_place_resume = 1;
 
-      //   break
-      case 'k': /* coverage collecting dir */
-        
-        if(coverage_dir) FATAL("Multiple -k options not supported");
-        coverage_dir = optarg;
-
-        break;
+      //   break;
 
       case 'o': /* output dir */
 
         if (out_dir) FATAL("Multiple -o options not supported");
         out_dir = optarg;
+        //rareness_log_edge = alloc_printf("%s/edge_rare", out_dir);
+        //rareness_log_path = alloc_printf("%s/path_rare", out_dir);
 
         break;
 
@@ -4989,6 +4860,9 @@ int main(int argc, char** argv) {
         usage(argv[0]);
 
     }
+
+	rareness_log_edge = alloc_printf("%s/%s/edge_rare", out_dir,sync_id);
+	rareness_log_path = alloc_printf("%s/%s/path_rare", out_dir,sync_id);
   }
   
 
@@ -5082,7 +4956,7 @@ int main(int argc, char** argv) {
       show_stats();
 
       if (not_on_tty) {
-        ACTF("Entering queue cycle %llu.", queue_cycle);
+        //ACTF("Entering queue cycle %llu.", queue_cycle);
         fflush(stdout);
       }
 

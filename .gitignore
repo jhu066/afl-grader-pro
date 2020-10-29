@@ -2,3 +2,4 @@ afl-fuzz
 afl-tmin
 afl-showmap
 afl-qemu-trace
+qemu_mode/qemu-2.3.0.tar.gz
