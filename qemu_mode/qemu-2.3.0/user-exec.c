@@ -57,7 +57,7 @@ static void exception_action(CPUState *cpu)
 void cpu_resume_from_signal(CPUState *cpu, void *puc)
 {
 #ifdef __linux__
-    struct ucontext_t *uc = puc;
+    struct ucontext *uc = puc;
 #elif defined(__OpenBSD__)
     struct sigcontext *uc = puc;
 #endif
@@ -226,7 +226,7 @@ int cpu_signal_handler(int host_signum, void *pinfo,
 #elif defined(__OpenBSD__)
     struct sigcontext *uc = puc;
 #else
-    struct ucontext_t *uc = puc;
+    struct ucontext *uc = puc;
 #endif
 
     pc = PC_sig(uc);
