@@ -3,3 +3,8 @@ afl-tmin
 afl-showmap
 afl-qemu-trace
 qemu_mode/qemu-2.3.0.tar.gz
+afl-as
+afl-gcc
+afl-gotcpu
+qemu_mode/qemu-2.3.0/roms/seabios/config.mak
+qemu_mode/qemu-2.3.0/roms/vgabios/config.mak
